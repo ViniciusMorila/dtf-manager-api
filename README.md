@@ -90,6 +90,58 @@ O HTTP em loopback serve apenas ao desenvolvimento local. A comunicação do apl
 
 O endpoint verifica apenas se a API responde; não verifica PostgreSQL nem serviços externos. Em development, não é necessário banco ou secret para iniciar. A variável de ambiente opcional `DTF_APP_NAME` continua configurando o título da API por pydantic-settings.
 
+## Deploy na Railway
+
+Conecte o repositório GitHub ao serviço Railway e use a raiz do repositório como
+diretório do serviço. Selecione o builder **Railpack**, que detecta Python pelo
+`pyproject.toml`. O arquivo `.python-version` seleciona Python 3.12; o projeto
+continua aceitando Python >=3.12. Não é necessário Dockerfile ou `railway.toml`:
+configure os campos abaixo no painel do serviço.
+
+Em **Settings → Build**, configure o **Build Command**:
+
+```sh
+python -m pip install .
+```
+
+Esse comando instala o projeto e as dependências de produção declaradas no
+`pyproject.toml`, sem o extra `dev`. Em **Settings → Deploy**, configure o
+**Start Command** explicitamente, pois a entrada deste projeto é `app.main:app`:
+
+```sh
+python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
+```
+
+O Railpack executa o comando em shell, expandindo `PORT`, fornecida pela Railway.
+Não fixe `PORT=8000` nas variáveis do serviço e não use `--reload` em produção.
+Defina **Healthcheck Path** como `/health`. Em **Networking**, gere um domínio
+público HTTPS e verifique `https://SEU-DOMINIO/health`: deve responder HTTP 200
+com `{"status":"ok"}`. Esse healthcheck verifica o processo, não a conexão ao banco.
+
+Em **Variables**, forneça externamente a configuração existente:
+
+- `ENVIRONMENT=production`.
+- `JWT_ACCESS_SECRET` e `JWT_REFRESH_SECRET`: valores aleatórios, distintos e
+  seguros conforme a validação descrita abaixo. Não copie os placeholders.
+- `DATABASE_URL`: URL do PostgreSQL acessível pelo backend, com esquema
+  `postgresql+psycopg://`. A URL padrão `postgresql://` deve ter apenas o esquema
+  adaptado para psycopg 3, preservando os demais componentes e parâmetros.
+- As variáveis Mercado Pago, se a integração for habilitada, conforme
+  [o guia existente](docs/mercado_pago.md). Configuração parcial ou fictícia
+  impede a inicialização em produção. Se desabilitada, omita as três variáveis.
+
+Não envie `.env` nem copie secrets para arquivos versionados. As migrations
+existentes precisam estar aplicadas no banco para os endpoints de negócio;
+consulte a seção de Alembic deste README. O comando de start não executa migrations
+nem seed, e esta preparação não altera ou acessa o banco.
+
+Após enviar essas alterações ao GitHub, faça o deploy, confira os logs de build
+e inicialização e valide `/health` no domínio gerado. A verificação local não
+substitui a confirmação do build e das variáveis no ambiente Railway.
+
+Referências: [Python no Railpack](https://railpack.com/languages/python) e
+[Start Command na Railway](https://docs.railway.com/deployments/start-command).
+
 ## Configuração — etapa 2
 
 `Settings`, em `app/core/config.py`, carrega as variáveis do ambiente e o arquivo `.env` em UTF-8 no diretório de execução. Variáveis do processo têm prioridade sobre o arquivo. Para preparar a configuração local, copie `.env.example` para `.env` se este ainda não existir. `.env` é ignorado pelo Git; o exemplo contém apenas valores fictícios.
