@@ -1,0 +1,1 @@
+"""Reservado para exceções compartilhadas."""

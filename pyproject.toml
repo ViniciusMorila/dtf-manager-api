@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dtf-manager-api"
+version = "0.1.0"
+description = "API oficial do DTF Manager"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mercadopago>=3.5,<4",
+    "simplejson>=4.1,<5",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "SQLAlchemy>=2.0,<3",
+    "alembic>=1.13,<2",
+    "psycopg[binary]>=3.2,<4",
+    "pydantic[email]>=2.0,<3",
+    "pydantic-settings>=2.0,<3",
+    "PyJWT>=2.9,<3",
+    "argon2-cffi>=23.1,<26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "httpx>=0.27,<1", "ruff>=0.15,<1"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
