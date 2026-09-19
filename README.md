@@ -107,10 +107,10 @@ dependências de produção, atualize os dois arquivos. FastAPI e Uvicorn perten
 `python-dateutil` não é utilizado: os cálculos de calendário usam a biblioteca
 padrão. O pydantic-core e email-validator são instalados por `pydantic[email]`.
 
-O **Build Command** definido no arquivo instala o pacote e verifica o ambiente:
+O **Build Command** definido no arquivo instala o pacote:
 
 ```sh
-python -m pip install . && python -m pip check && python -m uvicorn --version
+python -m pip install .
 ```
 
 Esse comando instala o projeto e as dependências de produção declaradas no
@@ -118,10 +118,11 @@ Esse comando instala o projeto e as dependências de produção declaradas no
 pois a entrada deste projeto é `app.main:app`:
 
 ```sh
-python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
+python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
 O Railpack executa o comando em shell, expandindo `PORT`, fornecida pela Railway.
+O arquivo também define `restartPolicyType = "ON_FAILURE"`.
 Não fixe `PORT=8000` nas variáveis do serviço e não use `--reload` em produção.
 Defina **Healthcheck Path** como `/health`. Em **Networking**, gere um domínio
 público HTTPS e verifique `https://SEU-DOMINIO/health`: deve responder HTTP 200
@@ -153,10 +154,17 @@ dependências de produção. FastAPI e Uvicorn já estavam declarados anteriorme
 apenas ter `pyproject.toml` não garantia a instalação automática pip no fluxo
 anterior, que não tinha `requirements.txt` nem um comando de build versionado.
 Sem os logs de build não é possível distinguir instalação omitida de instalação
-em outro ambiente. No novo deploy, confira a instalação via requirements, o
-sucesso de `pip check` e a versão do Uvicorn no build. Remova comandos antigos
+em outro ambiente. No novo deploy, confira a instalação via requirements e o
+sucesso de `python -m pip install .` no build. Remova comandos antigos
 que apontem diretamente para `/mise/installs/python/.../bin/python`: o start deve
 usar o `python` do PATH configurado pelo Railpack, incluindo seu ambiente virtual.
+
+Se o erro persistir após um push, confira no deploy afetado o commit utilizado,
+o serviço/repositório e a branch, o Root Directory (raiz deste projeto) e o
+Railway Config File (`/railway.toml`). Confira a configuração efetiva daquele
+deploy, inclusive possíveis overrides por ambiente, e os logs completos de build.
+O caminho `/mise/installs/python/3.12/bin/python` no erro, por si só, não comprova
+qual dessas configurações falhou nem que o último commit foi implantado.
 
 Referências: [Python no Railpack](https://railpack.com/languages/python) e
 [Start Command na Railway](https://docs.railway.com/deployments/start-command).
