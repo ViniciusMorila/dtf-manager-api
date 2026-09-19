@@ -107,10 +107,10 @@ dependências de produção, atualize os dois arquivos. FastAPI e Uvicorn perten
 `python-dateutil` não é utilizado: os cálculos de calendário usam a biblioteca
 padrão. O pydantic-core e email-validator são instalados por `pydantic[email]`.
 
-O **Build Command** definido no arquivo instala o pacote:
+O **Build Command** usa explicitamente o ambiente virtual preservado pelo Railpack:
 
 ```sh
-python -m pip install .
+/app/.venv/bin/python -m pip install . && /app/.venv/bin/python -m pip check && /app/.venv/bin/python -m uvicorn --version
 ```
 
 Esse comando instala o projeto e as dependências de produção declaradas no
@@ -118,7 +118,7 @@ Esse comando instala o projeto e as dependências de produção declaradas no
 pois a entrada deste projeto é `app.main:app`:
 
 ```sh
-python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+/app/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
 O Railpack executa o comando em shell, expandindo `PORT`, fornecida pela Railway.
@@ -153,11 +153,14 @@ Se ocorrer `No module named uvicorn`, o Python do start não está encontrando a
 dependências de produção. FastAPI e Uvicorn já estavam declarados anteriormente;
 apenas ter `pyproject.toml` não garantia a instalação automática pip no fluxo
 anterior, que não tinha `requirements.txt` nem um comando de build versionado.
-Sem os logs de build não é possível distinguir instalação omitida de instalação
-em outro ambiente. No novo deploy, confira a instalação via requirements e o
-sucesso de `python -m pip install .` no build. Remova comandos antigos
-que apontem diretamente para `/mise/installs/python/.../bin/python`: o start deve
-usar o `python` do PATH configurado pelo Railpack, incluindo seu ambiente virtual.
+Um build bem-sucedido não garante que o Python selecionado no start encontre os
+mesmos pacotes. O provider Python do Railpack cria `/app/.venv` na instalação pip
+e inclui esse diretório na imagem final. Modificações em outros diretórios do
+Python de build não têm essa mesma garantia de preservação. Build e start agora
+invocam `/app/.venv/bin/python` explicitamente, sem depender da ordem do PATH.
+O build verifica Uvicorn nesse mesmo ambiente antes de criar o deployment.
+Não há instalação de pacotes no start. Essa configuração depende do provider
+Python/pip do Railpack, acionado pelo `requirements.txt` presente na raiz.
 
 Se o erro persistir após um push, confira no deploy afetado o commit utilizado,
 o serviço/repositório e a branch, o Root Directory (raiz deste projeto) e o
@@ -166,7 +169,8 @@ deploy, inclusive possíveis overrides por ambiente, e os logs completos de buil
 O caminho `/mise/installs/python/3.12/bin/python` no erro, por si só, não comprova
 qual dessas configurações falhou nem que o último commit foi implantado.
 
-Referências: [Python no Railpack](https://railpack.com/languages/python) e
+Referências: [provider Python do Railpack](https://github.com/railwayapp/railpack/blob/main/core/providers/python/python.go),
+[Python no Railpack](https://railpack.com/languages/python) e
 [Start Command na Railway](https://docs.railway.com/deployments/start-command).
 
 ## Configuração — etapa 2

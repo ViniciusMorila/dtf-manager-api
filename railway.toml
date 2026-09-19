@@ -1,8 +1,8 @@
 [build]
 builder = "RAILPACK"
-buildCommand = "python -m pip install ."
+buildCommand = "/app/.venv/bin/python -m pip install . && /app/.venv/bin/python -m pip check && /app/.venv/bin/python -m uvicorn --version"
 
 [deploy]
-startCommand = "python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+startCommand = "/app/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"
 restartPolicyType = "ON_FAILURE"
