@@ -1,0 +1,14 @@
+# Espelho de project.dependencies no pyproject.toml para a instalacao do Railpack.
+# Ao alterar dependencias de producao, atualize ambos; test_deployment verifica igualdade.
+mercadopago>=3.5,<4
+simplejson>=4.1,<5
+requests>=2.32,<3
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+SQLAlchemy>=2.0,<3
+alembic>=1.13,<2
+psycopg[binary]>=3.2,<4
+pydantic[email]>=2.0,<3
+pydantic-settings>=2.0,<3
+PyJWT>=2.9,<3
+argon2-cffi>=23.1,<26

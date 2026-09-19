@@ -95,18 +95,27 @@ O endpoint verifica apenas se a API responde; não verifica PostgreSQL nem servi
 Conecte o repositório GitHub ao serviço Railway e use a raiz do repositório como
 diretório do serviço. Selecione o builder **Railpack**, que detecta Python pelo
 `pyproject.toml`. O arquivo `.python-version` seleciona Python 3.12; o projeto
-continua aceitando Python >=3.12. Não é necessário Dockerfile ou `railway.toml`:
-configure os campos abaixo no painel do serviço.
+continua aceitando Python >=3.12. Não é necessário Dockerfile. O `railway.toml`
+agora versiona builder, build, start e healthcheck, eliminando a dependência de
+configuração manual desses comandos. Use o arquivo `/railway.toml` da raiz.
 
-Em **Settings → Build**, configure o **Build Command**:
+O `requirements.txt` aciona a instalação pip do Railpack no ambiente virtual que
+é incluído na imagem final. Ele espelha apenas `project.dependencies` do
+`pyproject.toml`; o teste `tests/test_deployment.py` impede divergências. Ao mudar
+dependências de produção, atualize os dois arquivos. FastAPI e Uvicorn pertencem
+às dependências de produção, assim como o SDK Mercado Pago, simplejson e requests.
+`python-dateutil` não é utilizado: os cálculos de calendário usam a biblioteca
+padrão. O pydantic-core e email-validator são instalados por `pydantic[email]`.
+
+O **Build Command** definido no arquivo instala o pacote e verifica o ambiente:
 
 ```sh
-python -m pip install .
+python -m pip install . && python -m pip check && python -m uvicorn --version
 ```
 
 Esse comando instala o projeto e as dependências de produção declaradas no
-`pyproject.toml`, sem o extra `dev`. Em **Settings → Deploy**, configure o
-**Start Command** explicitamente, pois a entrada deste projeto é `app.main:app`:
+`pyproject.toml`, sem o extra `dev`. O **Start Command** também está versionado,
+pois a entrada deste projeto é `app.main:app`:
 
 ```sh
 python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
@@ -138,6 +147,16 @@ nem seed, e esta preparação não altera ou acessa o banco.
 Após enviar essas alterações ao GitHub, faça o deploy, confira os logs de build
 e inicialização e valide `/health` no domínio gerado. A verificação local não
 substitui a confirmação do build e das variáveis no ambiente Railway.
+
+Se ocorrer `No module named uvicorn`, o Python do start não está encontrando as
+dependências de produção. FastAPI e Uvicorn já estavam declarados anteriormente;
+apenas ter `pyproject.toml` não garantia a instalação automática pip no fluxo
+anterior, que não tinha `requirements.txt` nem um comando de build versionado.
+Sem os logs de build não é possível distinguir instalação omitida de instalação
+em outro ambiente. No novo deploy, confira a instalação via requirements, o
+sucesso de `pip check` e a versão do Uvicorn no build. Remova comandos antigos
+que apontem diretamente para `/mise/installs/python/.../bin/python`: o start deve
+usar o `python` do PATH configurado pelo Railpack, incluindo seu ambiente virtual.
 
 Referências: [Python no Railpack](https://railpack.com/languages/python) e
 [Start Command na Railway](https://docs.railway.com/deployments/start-command).

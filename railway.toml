@@ -1,0 +1,7 @@
+[build]
+builder = "RAILPACK"
+buildCommand = "python -m pip install . && python -m pip check && python -m uvicorn --version"
+
+[deploy]
+startCommand = 'python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"'
+healthcheckPath = "/health"
