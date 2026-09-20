@@ -2,6 +2,7 @@
 
 import sys
 from dataclasses import dataclass
+from decimal import Decimal
 
 from sqlalchemy.dialects.postgresql import Insert, insert
 from sqlalchemy.engine import Connection, Engine
@@ -17,19 +18,20 @@ class StandardPlan:
     name: str
     duration_months: int | None
     is_lifetime: bool
+    price: Decimal
 
 
 STANDARD_PLANS: tuple[StandardPlan, ...] = (
-    StandardPlan(PlanCode.MONTHLY, "1 mês", 1, False),
-    StandardPlan(PlanCode.SEMIANNUAL, "6 meses", 6, False),
-    StandardPlan(PlanCode.ANNUAL, "1 ano", 12, False),
-    StandardPlan(PlanCode.LIFETIME, "Vitalício", None, True),
+    StandardPlan(PlanCode.MONTHLY, "1 mês", 1, False, Decimal("79.90")),
+    StandardPlan(PlanCode.SEMIANNUAL, "6 meses", 6, False, Decimal("399.90")),
+    StandardPlan(PlanCode.ANNUAL, "1 ano", 12, False, Decimal("699.90")),
+    StandardPlan(PlanCode.LIFETIME, "Vitalício", None, True, Decimal("1499.90")),
 )
 
 
 def build_seed_statement() -> Insert:
     """A constraint única de code resolve também conflitos concorrentes."""
-    return (
+    statement: Insert = (
         insert(Plan.__table__)
         .values([
             {
@@ -38,16 +40,23 @@ def build_seed_statement() -> Insert:
                 "duration_months": plan.duration_months,
                 "is_lifetime": plan.is_lifetime,
                 "is_active": True,
+                "price": plan.price,
             }
             for plan in STANDARD_PLANS
         ])
-        .on_conflict_do_nothing(index_elements=[Plan.__table__.c.code])
+    )
+    return (
+        statement.on_conflict_do_update(
+            index_elements=[Plan.__table__.c.code],
+            set_={"price": statement.excluded.price},
+            where=Plan.__table__.c.price.is_distinct_from(statement.excluded.price),
+        )
         .returning(Plan.__table__.c.code)
     )
 
 
 def seed_plans(connection: Connection) -> int:
-    """Insere apenas códigos ausentes; a transação pertence ao chamador."""
+    """Insere ausentes ou atualiza somente preços divergentes, na transação do chamador."""
     return len(connection.execute(build_seed_statement()).scalars().all())
 
 
@@ -57,7 +66,7 @@ def main() -> int:
     try:
         engine = get_engine()
         with engine.begin() as connection:
-            inserted: int = seed_plans(connection)
+            affected: int = seed_plans(connection)
     except (ValueError, SQLAlchemyError):
         print(
             "Falha no seed: verifique as configurações, a conexão PostgreSQL "
@@ -69,7 +78,7 @@ def main() -> int:
         if engine is not None:
             engine.dispose()
             get_engine.cache_clear()
-    print(f"Seed concluído: {inserted} plano(s) inserido(s). Planos existentes preservados.")
+    print(f"Seed concluído: {affected} plano(s) inserido(s) ou com preço atualizado.")
     return 0
 
 

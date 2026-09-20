@@ -234,9 +234,9 @@ Após o upgrade terminar com sucesso, execute o seed existente:
 /app/.venv/bin/python -m scripts.seed_plans
 ```
 
-O seed insere apenas os códigos ausentes: `MONTHLY`, `SEMIANNUAL`, `ANNUAL` e
-`LIFETIME`. Pode ser repetido sem sobrescrever planos existentes. Planos novos
-ficam com preço nulo; o seed não define preços nem ativa assinaturas.
+O seed insere códigos ausentes e atualiza somente `price` dos planos existentes:
+`MONTHLY` 79,90; `SEMIANNUAL` 399,90; `ANNUAL` 699,90; `LIFETIME` 1.499,90 (BRL).
+IDs, demais campos e relacionamentos são preservados; nenhuma assinatura é ativada.
 Não use `stamp` ou `create_all()` para substituir as migrations.
 
 Nas rotas futuras, declare `session: SessionDependency`, importando o alias de `app.db.session`. O FastAPI injeta uma sessão própria por requisição. A sessão é sempre fechada e exceções provocam rollback. Não há commit automático: os serviços deverão controlar explicitamente suas transações. Operações com essa sessão síncrona devem ser executadas em rotas `def`, para não bloquear o event loop.
@@ -298,16 +298,16 @@ Com as dependências instaladas, `DATABASE_URL` real configurada no ambiente ou 
 
 O script `scripts/seed_plans.py` insere os planos abaixo, inicialmente com `is_active = true`:
 
-| code | name | duration_months | is_lifetime |
-| --- | --- | --- | --- |
-| `MONTHLY` | 1 mês | 1 | false |
-| `SEMIANNUAL` | 6 meses | 6 | false |
-| `ANNUAL` | 1 ano | 12 | false |
-| `LIFETIME` | Vitalício | null | true |
+| code | name | duration_months | is_lifetime | price (BRL) |
+| --- | --- | --- | --- | --- |
+| `MONTHLY` | 1 mês | 1 | false | 79,90 |
+| `SEMIANNUAL` | 6 meses | 6 | false | 399,90 |
+| `ANNUAL` | 1 ano | 12 | false | 699,90 |
+| `LIFETIME` | Vitalício | null | true | 1.499,90 |
 
-O seed usa `INSERT ... ON CONFLICT (code) DO NOTHING`, apoiado pela constraint única do banco. Execuções repetidas ou concorrentes não duplicam planos. Registros existentes são preservados integralmente, inclusive UUID, nome, datas e `is_active`; um plano desativado não é reativado pelo seed. Se faltar apenas parte do catálogo, somente os códigos ausentes são inseridos.
+O seed usa `INSERT ... ON CONFLICT (code) DO UPDATE` para atualizar exclusivamente `price`, quando `IS DISTINCT FROM` o preço oficial (inclusive nulo). A constraint única impede duplicação. UUID, nome, datas, duração, `is_active` e relacionamentos existentes são preservados; planos desativados não são reativados. Valores usam `Decimal` e `NUMERIC(18,2)`, sem float. A criação interna de pagamentos consulta `plan.price` no banco e rejeita valores esperados divergentes; não existe endpoint de cobrança que aceite preço do desktop.
 
-As inserções são confirmadas em uma única transação; falhas provocam rollback e código de saída 1. O comando informa a quantidade inserida após o commit. O seed não cria tabelas, não aplica migrations e não roda automaticamente na inicialização da API. Cadastrar planos não cria assinaturas ou licenças.
+As inserções e atualizações são confirmadas em uma única transação; falhas provocam rollback e código de saída 1. O comando informa a quantidade inserida ou com preço atualizado após o commit; repetição sem mudanças informa zero. O seed não cria tabelas, não aplica migrations e não roda automaticamente na inicialização da API. Cadastrar planos não cria assinaturas ou licenças.
 
 Para executar os testes do seed:
 

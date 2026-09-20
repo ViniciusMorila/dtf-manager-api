@@ -24,8 +24,10 @@ Após configurar DATABASE_URL, executar no PowerShell:
 ```
 
 A migration `0002_plan_price` adiciona `plans.price NUMERIC(18,2)` em BRL.
-Planos existentes ficam com preço nulo. Defina preços reais pela administração
-interna do servidor/banco antes de cobrar. O seed não inventa nem sobrescreve preços.
+A coluna permite preço nulo, mas o seed configura os preços oficiais em BRL:
+MONTHLY 79,90; SEMIANNUAL 399,90; ANNUAL 699,90; LIFETIME 1.499,90.
+Execute `python -m scripts.seed_plans` após as migrations para inserir ausentes
+e atualizar somente preços divergentes, preservando IDs e demais campos.
 Preço ausente, não positivo ou divergente bloqueia cobrança. Não alterar preço de
 plano com cobrança pendente: a conciliação exige preço atual igual ao valor persistido.
 Versione os planos ao alterar preços em uma evolução futura.

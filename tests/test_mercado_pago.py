@@ -213,6 +213,25 @@ def test_authoritative_links(records: tuple[Payment, Subscription, Plan, User], 
         PaymentService(session).apply_provider_payment(payment.id, "mercado_pago", confirmation(payment))
 
 
+@pytest.mark.parametrize("price", [Decimal("79.90"), Decimal("399.90"), Decimal("699.90"), Decimal("1499.90")])
+def test_creation_uses_database_price(records: tuple[Payment, Subscription, Plan, User],
+    provider: MercadoPagoPaymentProvider, price: Decimal) -> None:
+    _, subscription, plan, user = records
+    plan.price = price
+    session: MagicMock = MagicMock(spec=Session)
+    session.scalar.side_effect = [subscription, plan]
+    session.get.side_effect = [user, None]
+    with patch.object(provider, "create_payment", side_effect=ProviderUnavailable()) as create:
+        with pytest.raises(ProviderUnavailable):
+            PaymentService(session).create_provider_charge(user_id=user.id, subscription_id=subscription.id,
+                expected_amount=price, description="DTF Manager", provider=provider)
+        stored: Payment = session.add.call_args.args[0]
+        sent: PaymentCreate = create.call_args.args[0]
+        assert stored.amount == sent.amount == plan.price
+        assert isinstance(stored.amount, Decimal) and isinstance(sent.amount, Decimal)
+        assert stored.currency == sent.currency == "BRL"
+
+
 def test_creation_retry_persists_intent_before_network(records: tuple[Payment, Subscription, Plan, User],
                                                       provider: MercadoPagoPaymentProvider) -> None:
     payment, subscription, plan, user = records
