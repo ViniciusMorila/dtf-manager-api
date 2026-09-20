@@ -2,7 +2,7 @@
 
 from typing import Literal, Self
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     mercado_pago_access_token: SecretStr | None = None
     mercado_pago_webhook_secret: SecretStr | None = None
     mercado_pago_environment: Literal["test", "production"] | None = None
+    api_public_base_url: HttpUrl | None = None
     jwt_access_secret: SecretStr | None = None
     jwt_refresh_secret: SecretStr | None = None
     jwt_access_expire_minutes: int = Field(default=15, gt=0)
@@ -29,6 +30,14 @@ class Settings(BaseSettings):
     environment: Literal["development", "testing", "staging", "production"] = "development"
     host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(default=8000, ge=1, le=65535)
+
+    @field_validator("api_public_base_url")
+    @classmethod
+    def validate_public_url(cls, value: HttpUrl | None) -> HttpUrl | None:
+        if value is not None and (value.scheme != "https" or value.username or value.password
+                                  or value.query or value.fragment or value.path not in (None, "/")):
+            raise ValueError("API_PUBLIC_BASE_URL deve ser uma origem HTTPS sem credenciais, caminho ou query.")
+        return value
 
     @model_validator(mode="after")
     def validate_production_secrets(self) -> Self:

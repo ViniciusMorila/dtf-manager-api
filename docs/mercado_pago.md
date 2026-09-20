@@ -71,7 +71,9 @@ nunca no external_reference, nos logs ou schemas públicos.
 
 Falha após criação remota pode ser conciliada pelo webhook: metadata contém UUID local
 do pagamento e external_reference contém UUID da assinatura. Não apagar intenções
-pendentes para tentar novamente. Entrega de QR Code/checkout público fica para etapa futura.
+pendentes para tentar novamente. A entrega de QR Code permanece interna. O Checkout Pro
+público é descrito em [checkout_pro.md](checkout_pro.md); uma assinatura não pode
+misturar esse fluxo com a cobrança Pix interna.
 
 ## Webhook e confirmação
 

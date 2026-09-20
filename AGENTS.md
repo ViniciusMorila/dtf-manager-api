@@ -25,12 +25,19 @@ Estas instruções se aplicam a todo este repositório e às futuras implementa�
 - `.env` não deve ser versionado; `.env.example` deve conter apenas exemplos fictícios. Não definir secrets padrão no código. Secrets JWT ausentes ou inseguros devem impedir a inicialização em production.
 - Adicionar tipagem Python em todo código novo.
 - Validar imports, executar testes básicos e verificar a inicialização com Uvicorn.
-- Endpoints autorizados: health, cadastro, login, refresh, logout, /license/status, /me e POST /payments/mercado-pago/webhook. Criação de cobrança e ativação continuam internas.
+- Endpoints autorizados: health, cadastro, login, refresh, logout, /license/status, /me, POST /payments/mercado-pago/webhook, GET /plans, POST /payments/checkout e GET /payments/{payment_id}. Pix direto e ativação continuam internos; checkout exige JWT e propriedade da assinatura.
 - NÃO alterar o aplicativo DTF Manager.
 - ETAPA 18 autorizada: SDK oficial Mercado Pago isolado no provider, cobrança Pix interna, preço Decimal no plano e webhook público assinado. Consultar o pagamento no provedor antes de reconciliar; validar ID, referência, vínculos, valor, moeda e ambiente. Somente PaymentService ativa a assinatura. Persistir intenção antes da rede e reutilizar chave/corpo no retry. Testar com mocks, nunca fazer cobranças reais.
 - Funcionalidades além da etapa 18 dependem de uma solicitação posterior do usuário.
 
 ## Arquitetura obrigatória
+
+- Complemento autorizado da etapa 18: `GET /plans` público, `POST /payments/checkout`
+  e `GET /payments/{payment_id}` autenticados. Checkout Pro via Preferences no provider,
+  preço do banco, intenção local antes da rede e referências geradas no servidor.
+  `API_PUBLIC_BASE_URL` define a origem HTTPS do webhook. Reutilizar preferência pendente;
+  criação incerta ou expirada exige conciliação antes de nova cobrança. Preservar Pix interno,
+  validações do webhook e ativação exclusivamente pelo PaymentService.
 
 ```text
 DTF MANAGER (aplicativo)

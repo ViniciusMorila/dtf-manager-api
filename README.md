@@ -1,14 +1,17 @@
 # API DTF Manager
 
-Etapa 18: integração inicial Mercado Pago pelo SDK oficial, cobrança Pix interna e
-`POST /payments/mercado-pago/webhook`. Consulte [configuração, preços e operação](docs/mercado_pago.md).
+Etapa 18: Mercado Pago pelo SDK oficial, Pix interno preservado e Checkout Pro.
+O fluxo público agora oferece `GET /plans`, `POST /payments/checkout` e
+`GET /payments/{payment_id}`, além do webhook assinado.
+Consulte o [roteiro ponta a ponta e configuração Railway](docs/checkout_pro.md)
+e a [conciliação e operação de pagamentos](docs/mercado_pago.md).
 
 Revisão de testes da etapa 18: assinatura inválida retorna 401, pagamento sem
 intenção local retorna 409 e falha temporária do provedor retorna 503 para retry.
 Conciliação e ativação continuam no PaymentService. O roteiro de configuração e
 as limitações da validação local estão documentados no guia acima.
 
-API oficial do DTF Manager. O projeto fornece configurações centralizadas, infraestrutura PostgreSQL/Alembic, models, seed de planos, schemas públicos, utilitários de segurança e serviços de licença e pagamentos. Além do webhook, os endpoints disponíveis são `GET /health`, `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /license/status` e `GET /me`. O aplicativo DTF Manager não foi alterado.
+API oficial do DTF Manager. O projeto fornece configurações centralizadas, infraestrutura PostgreSQL/Alembic, models, seed de planos, schemas públicos, utilitários de segurança e serviços de licença e pagamentos. Além das rotas de planos/pagamentos acima, estão disponíveis `GET /health`, `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /license/status` e `GET /me`. O aplicativo DTF Manager não foi alterado.
 
 ## Arquitetura obrigatória
 

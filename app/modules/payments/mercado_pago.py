@@ -2,6 +2,7 @@
 import json
 from decimal import Decimal
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 import mercadopago
 import requests
@@ -15,7 +16,12 @@ from mercadopago.webhook.validator import (
 )
 
 from app.core.config import Settings
-from app.modules.payments.contracts import PaymentCreate, ProviderPayment
+from app.modules.payments.contracts import (
+    CheckoutCreate,
+    CheckoutPreference,
+    PaymentCreate,
+    ProviderPayment,
+)
 from app.modules.payments.models import PaymentStatus
 from app.modules.payments.provider import PaymentProvider
 
@@ -47,6 +53,8 @@ class DecimalHttpClient(HttpClient):
             payload: dict[str, Any] = json.loads(kwargs["data"], parse_float=Decimal)
             if "transaction_amount" in payload:
                 payload["transaction_amount"] = Decimal(payload["transaction_amount"])
+            for item in payload.get("items", []):
+                item["unit_price"] = Decimal(item["unit_price"])
             kwargs["data"] = simplejson.dumps(payload, use_decimal=True, allow_nan=False)
         with requests.Session() as session:
             response: requests.Response = session.request(method, url, **kwargs)
@@ -107,6 +115,34 @@ class MercadoPagoPaymentProvider(PaymentProvider):
         except (MercadoPagoError, requests.RequestException, TimeoutError, ValueError, TypeError):
             raise ProviderUnavailable("Falha na API de pagamentos.") from None
         return self._parse(result)
+
+    def create_checkout(self, payment: CheckoutCreate) -> CheckoutPreference:
+        if (payment.provider != self.name or payment.currency != "BRL" or payment.amount <= 0
+                or payment.payment_id is None or not payment.description):
+            raise ProviderInvalidPayment("Dados de checkout inválidos.")
+        payload: dict[str, Any] = {
+            "items": [{"id": str(payment.subscription_id), "title": payment.description,
+                       "quantity": 1, "currency_id": "BRL", "unit_price": str(payment.amount)}],
+            "external_reference": str(payment.subscription_id),
+            "metadata": {"payment_id": str(payment.payment_id)},
+            "notification_url": payment.notification_url,
+            "expires": True, "expiration_date_to": payment.expires_at.isoformat(),
+        }
+        # Sem retry automático: Preferences não é tratado como Payments idempotente.
+        try:
+            result: Any = self._sdk.preference().create(payload,
+                RequestOptions(connection_timeout=8.0, max_retries=0))
+            if not isinstance(result, dict) or result.get("status") not in (200, 201):
+                raise ProviderUnavailable("Falha ao criar checkout.")
+            data: dict[str, Any] = result["response"]
+            url = urlsplit(data["init_point"])
+            if (url.scheme != "https" or url.hostname not in
+                    {"www.mercadopago.com.br", "www.mercadopago.com", "mercadopago.com.br"}
+                    or url.username or url.password or url.port not in (None, 443)):
+                raise ValueError("URL de checkout inválida")
+            return CheckoutPreference(preference_id=data["id"], init_point=data["init_point"])
+        except (MercadoPagoError, requests.RequestException, TimeoutError, ValueError, TypeError, KeyError):
+            raise ProviderUnavailable("Falha ao criar checkout.") from None
 
     def fetch_payment(self, provider_payment_id: str) -> ProviderPayment:
         if not provider_payment_id.isascii() or not provider_payment_id.isdigit() or len(provider_payment_id) > 64:

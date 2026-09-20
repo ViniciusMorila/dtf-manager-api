@@ -8,7 +8,9 @@ from app.core.health import router as health_router
 from app.db.base import load_models
 from app.modules.auth.routes import router as auth_router
 from app.modules.licenses.routes import router as license_router
+from app.modules.payments.routes import checkout_router
 from app.modules.payments.routes import router as payments_router
+from app.modules.plans.routes import router as plans_router
 from app.modules.subscriptions.service import LicenseStatusUnavailable
 from app.modules.users.routes import router as users_router
 from app.shared.exceptions.authentication import AuthenticationError
@@ -31,6 +33,8 @@ def create_app() -> FastAPI:
     application.include_router(license_router)
     application.include_router(users_router)
     application.include_router(payments_router)
+    application.include_router(checkout_router)
+    application.include_router(plans_router)
     application.add_exception_handler(RegistrationError, registration_error_handler)
     application.add_exception_handler(AuthenticationError, authentication_error_handler)
     application.add_exception_handler(LicenseStatusUnavailable, license_error_handler)

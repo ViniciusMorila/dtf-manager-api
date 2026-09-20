@@ -1,5 +1,6 @@
 """Persistência idempotente e aprovação atômica, sem chamadas externas."""
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db.base import load_models
 from app.modules.payments.contracts import (
+    CheckoutCreate,
     PaymentCreate,
     PaymentRecord,
     PaymentUpdate,
@@ -17,6 +19,7 @@ from app.modules.payments.contracts import (
 )
 from app.modules.payments.models import Payment, PaymentStatus
 from app.modules.payments.provider import PaymentProvider
+from app.modules.payments.schemas import CheckoutResponse, PaymentResponse
 from app.modules.plans.models import Plan
 from app.modules.subscriptions.models import Subscription
 from app.modules.subscriptions.service import (
@@ -43,6 +46,86 @@ class PaymentService:
         load_models()
         self._session: Session = session
 
+    @staticmethod
+    def _public_payment(payment: Payment) -> PaymentResponse:
+        return PaymentResponse(payment_id=payment.id, status=payment.status,
+                               amount=payment.amount, currency=payment.currency)
+
+    def get_user_payment(self, payment_id: UUID, user_id: UUID) -> PaymentResponse:
+        try:
+            with self._session.begin():
+                payment = self._session.scalar(select(Payment).where(
+                    Payment.id == payment_id, Payment.user_id == user_id))
+                if payment is None:
+                    raise PaymentNotFound("Pagamento não encontrado.")
+                return self._public_payment(payment)
+        except SQLAlchemyError:
+            raise PaymentError("Consulta de pagamento indisponível.") from None
+
+    def create_checkout(self, *, user_id: UUID, subscription_id: UUID,
+                        provider: PaymentProvider, notification_url: str) -> CheckoutResponse:
+        """Uma preferência por assinatura. Resultado de rede incerto nunca causa novo POST.
+
+        O marcador creating é confirmado ANTES da rede. Concorrentes retornam conflito;
+        sucesso persiste a URL. Falha/crash exige conciliação operacional, sem recriação.
+        """
+        payment_id = uuid5(NAMESPACE_URL, f"dtf-manager:{provider.name}:{subscription_id}")
+        try:
+            with self._session.begin():
+                subscription = self._session.scalar(select(Subscription).where(
+                    Subscription.id == subscription_id, Subscription.user_id == user_id).with_for_update())
+                if subscription is None:
+                    raise PaymentNotFound("Assinatura não encontrada.")
+                user = self._session.get(User, user_id)
+                plan = self._session.scalar(select(Plan).where(Plan.id == subscription.plan_id)
+                                            .with_for_update(read=True))
+                if (user is None or not user.is_active or plan is None or not plan.is_active
+                        or plan.price is None or plan.price <= 0 or subscription.status.value != "PENDING"
+                        or subscription.activated_at is not None or subscription.cancelled_at is not None):
+                    raise PaymentConflict("Assinatura não permite checkout.")
+                # Inclui pagamentos legados, evitando abrir checkout ao lado de outro fluxo.
+                existing = self._session.scalars(select(Payment).where(
+                    Payment.subscription_id == subscription_id).with_for_update()).all()
+                if existing:
+                    if len(existing) != 1:
+                        raise PaymentConflict("Assinatura já possui pagamentos.")
+                    payment = existing[0]
+                    metadata = payment.payment_metadata or {}
+                    if (payment.id != payment_id or payment.user_id != user_id or payment.provider != provider.name
+                            or payment.status != PaymentStatus.PENDING or payment.amount != plan.price
+                            or payment.currency != "BRL" or metadata.get("checkout_state") != "ready"):
+                        raise PaymentConflict("Checkout existente ou criação com resultado incerto.")
+                    expiration = metadata.get("checkout_expires_at")
+                    url = metadata.get("init_point")
+                    if (not isinstance(expiration, str) or not isinstance(url, str)
+                            or datetime.fromisoformat(expiration) <= datetime.now(UTC)):
+                        raise PaymentConflict("Checkout expirado; requer conciliação antes de nova cobrança.")
+                    return CheckoutResponse(**self._public_payment(payment).model_dump(), init_point=url)
+                expiration_at = datetime.now(UTC) + timedelta(hours=24)
+                description = f"DTF Manager - {plan.name} ({plan.code.value})"
+                payment = Payment(id=payment_id, user_id=user_id, subscription_id=subscription_id,
+                    provider=provider.name, amount=plan.price, currency="BRL", status=PaymentStatus.PENDING,
+                    payment_metadata={"checkout_state": "creating", "description": description,
+                                      "checkout_expires_at": expiration_at.isoformat(),
+                                      "notification_url": notification_url})
+                self._session.add(payment)
+                self._session.flush()
+                request = CheckoutCreate(user_id=user_id, subscription_id=subscription_id, payment_id=payment_id,
+                    provider=provider.name, amount=plan.price, currency="BRL", description=description,
+                    expires_at=expiration_at, notification_url=notification_url)
+            preference = provider.create_checkout(request)
+            with self._session.begin():
+                payment = self._session.scalar(select(Payment).where(Payment.id == payment_id)
+                    .with_for_update().execution_options(populate_existing=True))
+                if payment is None:
+                    raise PaymentNotFound("Pagamento não encontrado.")
+                payment.payment_metadata = {**(payment.payment_metadata or {}), "checkout_state": "ready",
+                    "preference_id": preference.preference_id, "init_point": preference.init_point}
+                self._session.flush()
+                return CheckoutResponse(**self._public_payment(payment).model_dump(), init_point=preference.init_point)
+        except SQLAlchemyError:
+            raise PaymentError("Checkout temporariamente indisponível.") from None
+
     def create_provider_charge(self, *, user_id: UUID, subscription_id: UUID,
                                expected_amount: Decimal, description: str,
                                provider: PaymentProvider) -> PaymentRecord:
@@ -67,6 +150,8 @@ class PaymentService:
                         or plan.price is None or plan.price <= 0 or plan.price != expected_amount):
                     raise PaymentConflict("Conta, plano ou preço incompatível.")
                 payment: Payment | None = self._session.get(Payment, payment_id)
+                if payment is not None and (payment.payment_metadata or {}).get("checkout_state"):
+                    raise PaymentConflict("Assinatura já possui Checkout Pro.")
                 if payment is None:
                     if subscription.status.value != "PENDING":
                         raise PaymentConflict("Assinatura não aguarda pagamento.")

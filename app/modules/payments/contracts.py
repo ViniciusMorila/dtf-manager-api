@@ -1,5 +1,6 @@
 """Contratos internos de pagamento; não são endpoints públicos."""
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
@@ -54,3 +55,14 @@ class PaymentRecord(BaseModel):
     amount: Decimal
     currency: str
     status: PaymentStatus
+
+
+class CheckoutPreference(BaseModel):
+    """Resultado interno da preferência; não representa pagamento confirmado."""
+    preference_id: str = Field(min_length=1)
+    init_point: str = Field(min_length=1)
+
+
+class CheckoutCreate(PaymentCreate):
+    expires_at: datetime
+    notification_url: str

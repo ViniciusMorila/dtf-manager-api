@@ -2,10 +2,19 @@
 
 from abc import ABC, abstractmethod
 
-from app.modules.payments.contracts import PaymentCreate, ProviderPayment
+from app.modules.payments.contracts import (
+    CheckoutCreate,
+    CheckoutPreference,
+    PaymentCreate,
+    ProviderPayment,
+)
 
 
 class PaymentProvider(ABC):
+    def create_checkout(self, payment: CheckoutCreate) -> CheckoutPreference:
+        """Capacidade opcional; provedores existentes de pagamento direto são preservados."""
+        raise NotImplementedError
+
     @property
     @abstractmethod
     def name(self) -> str:
