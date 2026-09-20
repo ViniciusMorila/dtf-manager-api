@@ -21,6 +21,8 @@ def get_database_url(settings: Settings) -> URL:
         url: URL = make_url(settings.database_url.get_secret_value())
     except (ArgumentError, ValueError):
         raise ValueError("DATABASE_URL inválida.") from None
+    if url.drivername == "postgresql":
+        url = url.set(drivername="postgresql+psycopg")
     if url.drivername != "postgresql+psycopg" or not url.database:
         raise ValueError("DATABASE_URL deve usar postgresql+psycopg e informar o banco.")
     return url

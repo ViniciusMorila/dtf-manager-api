@@ -133,9 +133,9 @@ Em **Variables**, forneça externamente a configuração existente:
 - `ENVIRONMENT=production`.
 - `JWT_ACCESS_SECRET` e `JWT_REFRESH_SECRET`: valores aleatórios, distintos e
   seguros conforme a validação descrita abaixo. Não copie os placeholders.
-- `DATABASE_URL`: URL do PostgreSQL acessível pelo backend, com esquema
-  `postgresql+psycopg://`. A URL padrão `postgresql://` deve ter apenas o esquema
-  adaptado para psycopg 3, preservando os demais componentes e parâmetros.
+- `DATABASE_URL`: URL do PostgreSQL acessível pelo backend. São aceitos
+  `postgresql://` (Railway) e `postgresql+psycopg://`. A API, o Alembic e o seed
+  normalizam apenas o driver para psycopg 3, preservando os demais componentes e parâmetros.
 - As variáveis Mercado Pago, se a integração for habilitada, conforme
   [o guia existente](docs/mercado_pago.md). Configuração parcial ou fictícia
   impede a inicialização em produção. Se desabilitada, omita as três variáveis.
@@ -206,7 +206,38 @@ As dependências de execução estão no `pyproject.toml`; pytest e httpx estão
 
 `app/db/base.py` define `Base` com `DeclarativeBase` e convenções de nomes para constraints e índices. Models futuros deverão herdar dessa base e declarar atributos com `Mapped` e `mapped_column`. Coloque-os em `app/modules/<domínio>/models.py` ou em arquivos dentro do pacote `models/`. O Alembic importa esses módulos antes de usar `Base.metadata` como `target_metadata`, permitindo autogenerate. Check constraints devem receber nomes explícitos para a convenção adotada.
 
-`app/db/session.py` fornece um engine síncrono por processo, com psycopg 3, `pool_pre_ping`, timeout de conexão de 5 segundos e parâmetros SQL ocultos nos erros. O engine e as conexões são criados sob demanda. `DATABASE_URL` é obrigatória ao acessar o banco ou executar o ambiente Alembic e deve usar `postgresql+psycopg://` com o nome do banco. Nenhuma credencial é definida no código ou no `alembic.ini`.
+`app/db/session.py` fornece um engine síncrono por processo, com psycopg 3, `pool_pre_ping`, timeout de conexão de 5 segundos e parâmetros SQL ocultos nos erros. O engine e as conexões são criados sob demanda. `DATABASE_URL` é obrigatória ao acessar o banco ou executar o ambiente Alembic e deve usar `postgresql://` ou `postgresql+psycopg://` com o nome do banco. A normalização usa `URL.set(drivername="postgresql+psycopg")`, sem reconstruir credenciais nem alterar parâmetros. Nenhuma credencial é definida no código ou no `alembic.ini`.
+
+### Inicialização manual do PostgreSQL na Railway
+
+Depois de publicar a normalização de URL, abra uma sessão no container do serviço
+da **API** (por exemplo, com `railway ssh`), no ambiente de produção selecionado.
+Execute na raiz `/app`, onde estão `alembic.ini`, `alembic/` e `scripts/`, usando
+as variáveis já configuradas no serviço:
+
+```sh
+cd /app
+/app/.venv/bin/python -m alembic upgrade head
+/app/.venv/bin/python -m alembic current
+```
+
+A revisão esperada é `0002_plan_price (head)`. A sequência existente é
+`base → 0001_initial_schema → 0002_plan_price`. Em um PostgreSQL vazio, cria
+`plans`, `users`, `refresh_tokens`, `subscriptions`, `payments` e a tabela de
+controle `alembic_version`, incluindo enums, constraints, índices e `plans.price`.
+Essa conclusão foi revisada no código e no SQL offline; não representa execução
+ou inspeção do banco de produção. Nenhuma migration é executada pelo start.
+
+Após o upgrade terminar com sucesso, execute o seed existente:
+
+```sh
+/app/.venv/bin/python -m scripts.seed_plans
+```
+
+O seed insere apenas os códigos ausentes: `MONTHLY`, `SEMIANNUAL`, `ANNUAL` e
+`LIFETIME`. Pode ser repetido sem sobrescrever planos existentes. Planos novos
+ficam com preço nulo; o seed não define preços nem ativa assinaturas.
+Não use `stamp` ou `create_all()` para substituir as migrations.
 
 Nas rotas futuras, declare `session: SessionDependency`, importando o alias de `app.db.session`. O FastAPI injeta uma sessão própria por requisição. A sessão é sempre fechada e exceções provocam rollback. Não há commit automático: os serviços deverão controlar explicitamente suas transações. Operações com essa sessão síncrona devem ser executadas em rotas `def`, para não bloquear o event loop.
 

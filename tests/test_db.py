@@ -1,6 +1,7 @@
 """Testes da infraestrutura, sem criar tabelas ou usar um banco substituto."""
 
 import asyncio
+import secrets
 from collections.abc import Generator
 from io import StringIO
 from pathlib import Path
@@ -14,6 +15,7 @@ from httpx import ASGITransport, AsyncClient, Response
 from pydantic import SecretStr
 from sqlalchemy import Engine, text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.schema import CreateTable
 
@@ -55,13 +57,26 @@ def test_engine_and_session_factory(configured_engine: Engine) -> None:
         assert session.expire_on_commit is False
 
 
-@pytest.mark.parametrize("value", [None, "invalid", "sqlite://", "postgresql://localhost/db", "postgresql+psycopg://localhost"])
+@pytest.mark.parametrize("value", [None, "invalid", "sqlite://", "postgresql+psycopg2://localhost/db", "postgresql+psycopg://localhost"])
 def test_invalid_database_url(value: str | None) -> None:
     settings: Settings = Settings.model_construct(
         database_url=SecretStr(value) if value is not None else None,
     )
     with pytest.raises(ValueError, match="DATABASE_URL"):
         get_database_url(settings)
+
+
+@pytest.mark.parametrize("driver", ["postgresql", "postgresql+psycopg"])
+def test_database_url_preserves_components(driver: str) -> None:
+    original: URL = URL.create(driver, username="test_user",
+        password=secrets.token_urlsafe(32) + "@:/%#", host="::1", port=5433,
+        database="dtf_test", query={"sslmode": "require", "application_name": "dtf"})
+    raw: str = original.render_as_string(hide_password=False)
+    settings: Settings = Settings.model_construct(database_url=SecretStr(raw))
+    normalized: URL = get_database_url(settings)
+    assert normalized == make_url(raw).set(drivername="postgresql+psycopg")
+    assert settings.database_url.get_secret_value() == raw
+    assert original.password not in repr(normalized)
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -139,12 +154,13 @@ def test_model_discovery_and_modern_mapping(monkeypatch: pytest.MonkeyPatch, tmp
         monkeypatch.delattr(app.modules, "discovery_probe", raising=False)
 
 
-def test_alembic_offline_initial_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("driver", ["postgresql", "postgresql+psycopg"])
+def test_alembic_offline_initial_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, driver: str) -> None:
     config: Config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     assert ScriptDirectory.from_config(config).get_heads() == ["0002_plan_price"]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ENVIRONMENT", "testing")
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://localhost/dtf_test")
+    monkeypatch.setenv("DATABASE_URL", f"{driver}://localhost/dtf_test")
     output: StringIO = StringIO()
     config.output_buffer = output
     command.upgrade(config, "head", sql=True)
