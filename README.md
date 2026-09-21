@@ -96,35 +96,39 @@ O endpoint verifica apenas se a API responde; não verifica PostgreSQL nem servi
 ## Deploy na Railway
 
 Conecte o repositório GitHub ao serviço Railway e use a raiz do repositório como
-diretório do serviço. Selecione o builder **Railpack**, que detecta Python pelo
-`pyproject.toml`. O arquivo `.python-version` seleciona Python 3.12; o projeto
-continua aceitando Python >=3.12. Não é necessário Dockerfile. O `railway.toml`
-agora versiona builder, build, start e healthcheck, eliminando a dependência de
-configuração manual desses comandos. Use o arquivo `/railway.toml` da raiz.
+diretório do serviço, com `/railway.toml` como arquivo de configuração.
+O builder **Dockerfile** usa `python:3.12-slim` e cria `/app/.venv` explicitamente.
+O projeto continua aceitando Python >=3.12. Builder, start e healthcheck estão
+versionados; a instalação está definida no `Dockerfile`.
 
-O `requirements.txt` aciona a instalação pip do Railpack no ambiente virtual que
-é incluído na imagem final. Ele espelha apenas `project.dependencies` do
+O `requirements.txt` permanece como espelho de `project.dependencies` do
 `pyproject.toml`; o teste `tests/test_deployment.py` impede divergências. Ao mudar
 dependências de produção, atualize os dois arquivos. FastAPI e Uvicorn pertencem
 às dependências de produção, assim como o SDK Mercado Pago, simplejson e requests.
 `python-dateutil` não é utilizado: os cálculos de calendário usam a biblioteca
 padrão. O pydantic-core e email-validator são instalados por `pydantic[email]`.
 
-O **Build Command** usa explicitamente o ambiente virtual preservado pelo Railpack:
+O build executa no Dockerfile, sem Build Command adicional na Railway:
 
 ```sh
-/app/.venv/bin/python -m pip install . && /app/.venv/bin/python -m pip check && /app/.venv/bin/python -m uvicorn --version
+python -m venv /app/.venv
+/app/.venv/bin/python -m pip install --no-cache-dir . && /app/.venv/bin/python -m pip check && /app/.venv/bin/python -m uvicorn --version
 ```
 
 Esse comando instala o projeto e as dependências de produção declaradas no
-`pyproject.toml`, sem o extra `dev`. O **Start Command** também está versionado,
+`pyproject.toml`, sem o extra `dev`. Não importa `app.main` nem executa `Settings()`.
+Nenhuma configuração de runtime é declarada como `ARG`, `ENV` ou secret de build.
+O `.dockerignore` restringe o contexto aos arquivos necessários, excluindo `.env`
+e caches locais. Migrations e scripts continuam na imagem, sem execução no build.
+O **Start Command** também está versionado,
 pois a entrada deste projeto é `app.main:app`:
 
 ```sh
-/app/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+/bin/sh -c "exec /app/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 ```
 
-O Railpack executa o comando em shell, expandindo `PORT`, fornecida pela Railway.
+Com Dockerfile, a Railway executa o override em exec form: o shell explícito é
+necessário para expandir `PORT` em runtime. `exec` entrega os sinais ao Uvicorn.
 O arquivo também define `restartPolicyType = "ON_FAILURE"`.
 Não fixe `PORT=8000` nas variáveis do serviço e não use `--reload` em produção.
 Defina **Healthcheck Path** como `/health`. Em **Networking**, gere um domínio
@@ -152,28 +156,30 @@ Após enviar essas alterações ao GitHub, faça o deploy, confira os logs de bu
 e inicialização e valide `/health` no domínio gerado. A verificação local não
 substitui a confirmação do build e das variáveis no ambiente Railway.
 
-Se ocorrer `No module named uvicorn`, o Python do start não está encontrando as
-dependências de produção. FastAPI e Uvicorn já estavam declarados anteriormente;
-apenas ter `pyproject.toml` não garantia a instalação automática pip no fluxo
-anterior, que não tinha `requirements.txt` nem um comando de build versionado.
-Um build bem-sucedido não garante que o Python selecionado no start encontre os
-mesmos pacotes. O provider Python do Railpack cria `/app/.venv` na instalação pip
-e inclui esse diretório na imagem final. Modificações em outros diretórios do
-Python de build não têm essa mesma garantia de preservação. Build e start agora
-invocam `/app/.venv/bin/python` explicitamente, sem depender da ordem do PATH.
-O build verifica Uvicorn nesse mesmo ambiente antes de criar o deployment.
-Não há instalação de pacotes no start. Essa configuração depende do provider
-Python/pip do Railpack, acionado pelo `requirements.txt` presente na raiz.
+Se ocorrer `secret JWT_ACCESS_EXPIRE_MINUTES not found` em `install mise packages`,
+o erro pertence ao build Railpack/BuildKit, antes da instalação do projeto.
+O Railpack pode montar variáveis do serviço como secrets de build mesmo quando
+o comando não as utiliza. A existência da variável em Variables não comprova que
+o secret foi entregue à sessão BuildKit daquele deployment. Sem o plano e os logs
+da plataforma, não é possível determinar por que essa entrega falhou.
+
+O Dockerfile elimina essa dependência do plano Railpack e de Mise. Não remova nem
+altere as variáveis de runtime para contornar o erro: `JWT_ACCESS_EXPIRE_MINUTES`
+pode continuar com `15`. As validações de produção permanecem em `Settings()` na
+inicialização da API; banco e pagamentos são configurados conforme seu uso.
+Build e start invocam `/app/.venv/bin/python` explicitamente. O build verifica
+Uvicorn nesse mesmo ambiente; não há instalação de pacotes no start.
 
 Se o erro persistir após um push, confira no deploy afetado o commit utilizado,
 o serviço/repositório e a branch, o Root Directory (raiz deste projeto) e o
 Railway Config File (`/railway.toml`). Confira a configuração efetiva daquele
 deploy, inclusive possíveis overrides por ambiente, e os logs completos de build.
-O caminho `/mise/installs/python/3.12/bin/python` no erro, por si só, não comprova
-qual dessas configurações falhou nem que o último commit foi implantado.
+Os logs devem indicar Dockerfile. Não é necessário definir novas variáveis.
+Se existir `RAILWAY_DOCKERFILE_PATH` apontando para outro arquivo, remova esse
+override ou ajuste-o para `Dockerfile`.
 
-Referências: [provider Python do Railpack](https://github.com/railwayapp/railpack/blob/main/core/providers/python/python.go),
-[Python no Railpack](https://railpack.com/languages/python) e
+Referências: [Dockerfiles na Railway](https://docs.railway.com/builds/dockerfiles),
+[secrets do Railpack](https://railpack.com/architecture/secrets) e
 [Start Command na Railway](https://docs.railway.com/deployments/start-command).
 
 ## Configuração — etapa 2
