@@ -22,6 +22,7 @@ from app.modules.payments.contracts import (
     PaymentCreate,
     ProviderPayment,
 )
+from app.modules.payments.diagnostics import log_checkout_failure
 from app.modules.payments.models import PaymentStatus
 from app.modules.payments.provider import PaymentProvider
 
@@ -36,6 +37,14 @@ class ProviderInvalidPayment(Exception):
 
 class InvalidSignature(Exception):
     """Notificação não autenticada."""
+
+
+class ProviderResponseDecodeError(ValueError):
+    """Preserva apenas o status HTTP quando o corpo não é JSON."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__("Provider response is not JSON")
+        self.status = status
 
 
 class DecimalHttpClient(HttpClient):
@@ -58,8 +67,12 @@ class DecimalHttpClient(HttpClient):
             kwargs["data"] = simplejson.dumps(payload, use_decimal=True, allow_nan=False)
         with requests.Session() as session:
             response: requests.Response = session.request(method, url, **kwargs)
+            try:
+                body = json.loads(response.text, parse_float=Decimal) if response.content else None
+            except ValueError:
+                raise ProviderResponseDecodeError(response.status_code) from None
             return {"status": response.status_code,
-                    "response": json.loads(response.text, parse_float=Decimal) if response.content else None}
+                    "response": body}
 
 
 class MercadoPagoPaymentProvider(PaymentProvider):
@@ -129,11 +142,16 @@ class MercadoPagoPaymentProvider(PaymentProvider):
             "expires": True, "expiration_date_to": payment.expires_at.isoformat(),
         }
         # Sem retry automático: Preferences não é tratado como Payments idempotente.
+        result: Any = None
+        stage = "preference_create"
         try:
-            result: Any = self._sdk.preference().create(payload,
+            result = self._sdk.preference().create(payload,
                 RequestOptions(connection_timeout=8.0, max_retries=0))
+            stage = "preference_http_response"
             if not isinstance(result, dict) or result.get("status") not in (200, 201):
+                log_checkout_failure(stage=stage, payment_id=payment.payment_id, result=result)
                 raise ProviderUnavailable("Falha ao criar checkout.")
+            stage = "preference_response_validation"
             data: dict[str, Any] = result["response"]
             url = urlsplit(data["init_point"])
             if (url.scheme != "https" or url.hostname not in
@@ -141,7 +159,15 @@ class MercadoPagoPaymentProvider(PaymentProvider):
                     or url.username or url.password or url.port not in (None, 443)):
                 raise ValueError("URL de checkout inválida")
             return CheckoutPreference(preference_id=data["id"], init_point=data["init_point"])
-        except (MercadoPagoError, requests.RequestException, TimeoutError, ValueError, TypeError, KeyError):
+        except (MercadoPagoError, requests.RequestException, TimeoutError, ValueError, TypeError, KeyError) as exc:
+            if isinstance(exc, MercadoPagoError):
+                result = {"status": exc.status_code, "response": exc.response}
+            if isinstance(exc, ProviderResponseDecodeError):
+                stage = "preference_response_decode"
+                result = {"status": exc.status}
+            if isinstance(exc, requests.RequestException) and exc.response is not None:
+                result = {"status": exc.response.status_code}
+            log_checkout_failure(stage=stage, payment_id=payment.payment_id, error=exc, result=result)
             raise ProviderUnavailable("Falha ao criar checkout.") from None
 
     def fetch_payment(self, provider_payment_id: str) -> ProviderPayment:

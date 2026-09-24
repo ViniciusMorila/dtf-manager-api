@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from app.core.config import Settings
 from app.db.session import SessionDependency
 from app.modules.auth.dependencies import CurrentUserDependency
+from app.modules.payments.diagnostics import log_checkout_failure
 from app.modules.payments.mercado_pago import (
     InvalidSignature,
     MercadoPagoPaymentProvider,
@@ -52,9 +53,11 @@ def checkout(data: CheckoutRequest, user: CurrentUserDependency, session: Sessio
             + "/payments/mercado-pago/webhook")
     except PaymentNotFound:
         raise HTTPException(404, "Assinatura não encontrada.") from None
-    except PaymentConflict:
+    except PaymentConflict as exc:
+        log_checkout_failure(stage="checkout_conflict", error=exc)
         raise HTTPException(409, "Checkout indisponível para esta assinatura; consulte o pagamento ou o suporte.") from None
-    except (PaymentError, ProviderUnavailable, ProviderInvalidPayment):
+    except (PaymentError, ProviderUnavailable, ProviderInvalidPayment) as exc:
+        log_checkout_failure(stage="checkout_http_response", error=exc)
         raise HTTPException(503, "Checkout temporariamente indisponível.") from None
 
 

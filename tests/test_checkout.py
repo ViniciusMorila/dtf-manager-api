@@ -11,7 +11,9 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from mercadopago.errors.exceptions import MPBadRequestError
 from pydantic import SecretStr, ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -19,6 +21,7 @@ from app.db.session import get_session
 from app.main import create_app
 from app.modules.auth.dependencies import AuthenticatedUser, get_current_user
 from app.modules.payments.contracts import CheckoutCreate, CheckoutPreference
+from app.modules.payments.diagnostics import log_checkout_failure
 from app.modules.payments.mercado_pago import (
     MercadoPagoPaymentProvider,
     ProviderUnavailable,
@@ -182,6 +185,86 @@ def test_uncertain_creation_never_retries(db: MagicMock, provider: MercadoPagoPa
         assert start(client, db).status_code == 409
         create.assert_called_once()
         assert db.records[Payment].status == PaymentStatus.PENDING
+
+
+@pytest.mark.parametrize("sdk_exception", [False, True])
+def test_safe_provider_diagnostics(db: MagicMock, provider: MercadoPagoPaymentProvider,
+                                   caplog: pytest.LogCaptureFixture, sdk_exception: bool) -> None:
+    secret = secrets.token_urlsafe(40)
+    body = {"error": "invalid_items", "message": "unit_price invalid.",
+            "cause": [{"code": "invalid_items", "description": secret}],
+            "Authorization": secret, "payload": {"password": secret}}
+    with client_for(db, provider) as client, patch.object(provider._sdk, "preference") as sdk:
+        if sdk_exception:
+            sdk.return_value.create.side_effect = MPBadRequestError(400, body)
+        else:
+            sdk.return_value.create.return_value = {"status": 400, "response": body}
+        result = start(client, db)
+        assert result.status_code == 503
+        assert result.json() == {"detail": "Checkout temporariamente indisponível."}
+        assert start(client, db).status_code == 409
+        sdk.return_value.create.assert_called_once()
+    events = [json.loads(r.message) for r in caplog.records if r.name.endswith("diagnostics")]
+    assert events[0]["provider_http_status"] == 400
+    assert events[0]["provider_code"] == "invalid_items"
+    assert events[0]["message"] == "unit_price invalid."
+    assert events[0]["provider_causes"][0]["message"] == "[REDACTED]"
+    assert events[0]["exception_type"] == ("MPBadRequestError" if sdk_exception else None)
+    assert events[-1]["stage"] == "checkout_conflict"
+    assert secret not in caplog.text
+    assert all(r.exc_info is None for r in caplog.records)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "non_json", "invalid_response", "db_before", "db_after"])
+def test_checkout_failure_stages(db: MagicMock, provider: MercadoPagoPaymentProvider,
+                                caplog: pytest.LogCaptureFixture, failure: str) -> None:
+    secret = secrets.token_urlsafe(40)
+    with patch("app.modules.payments.mercado_pago.requests.Session") as http, client_for(db, provider) as client:
+        request = http.return_value.__enter__.return_value.request
+        response = request.return_value
+        response.status_code = 502 if failure == "non_json" else 201
+        response.content = b"body"
+        response.text = secret if failure == "non_json" else json.dumps(
+            {"id": "pref", "init_point": preference().init_point})
+        if failure == "timeout":
+            request.side_effect = TimeoutError(secret)
+        elif failure == "invalid_response":
+            response.text = json.dumps({"init_point": "https://evil.example/" + secret})
+        elif failure == "db_before":
+            db.flush.side_effect = SQLAlchemyError(secret)
+        elif failure == "db_after":
+            db.flush.side_effect = [None, SQLAlchemyError(secret)]
+        assert start(client, db).status_code == 503
+    event = next(json.loads(r.message) for r in caplog.records if r.name.endswith("diagnostics"))
+    assert event["stage"] == {
+        "timeout": "preference_create", "non_json": "preference_response_decode",
+        "invalid_response": "preference_response_validation",
+        "db_before": "checkout_intent_persistence", "db_after": "checkout_result_persistence",
+    }[failure]
+    assert event["provider_http_status"] == (502 if failure == "non_json" else
+                                            201 if failure == "invalid_response" else None)
+    assert secret not in caplog.text
+
+
+def test_railway_notification_url(db: MagicMock, provider: MercadoPagoPaymentProvider,
+                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("API_PUBLIC_BASE_URL", "https://dtf-manager-api-production.up.railway.app/")
+    with client_for(db, provider) as client, patch.object(provider, "create_checkout", return_value=preference()) as create:
+        assert start(client, db).status_code == 200
+    assert create.call_args.args[0].notification_url == (
+        "https://dtf-manager-api-production.up.railway.app/payments/mercado-pago/webhook")
+
+
+def test_diagnostics_omit_unknown_external_text(caplog: pytest.LogCaptureFixture) -> None:
+    secret = secrets.token_urlsafe(40)
+    log_checkout_failure(stage="preference_create", error=ValueError(secret), result={
+        "status": secret, "response": {"error": secret, "message": secret,
+        "cause": [{"code": secret, "description": secret}], "headers": {"Authorization": secret}}})
+    event = json.loads(caplog.records[0].message)
+    assert event["provider_http_status"] is None
+    assert event["provider_code"] == event["message"] == "[REDACTED]"
+    assert event["provider_causes"] == [{"code": "[REDACTED]", "message": "[REDACTED]"}]
+    assert secret not in caplog.text
 
 
 def test_overlapping_request_cannot_create_twice(db: MagicMock, provider: MercadoPagoPaymentProvider) -> None:

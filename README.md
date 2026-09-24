@@ -662,4 +662,23 @@ A lógica central de licença está implementada em SubscriptionService e expost
 
 ## Instruções para desenvolvimento
 
+Falhas de checkout geram linhas JSON com `event=checkout_failure` nos logs do servidor.
+`stage` distingue `preference_create` (SDK/rede), `preference_http_response`
+(status rejeitado), `preference_response_decode` (corpo não JSON),
+`preference_response_validation` (contrato/URL), `checkout_intent_persistence`
+e `checkout_result_persistence` (banco). `checkout_http_response` identifica a
+conversão final para o 503 genérico. `checkout_conflict` acompanha respostas 409.
+Os campos incluem `exception_type`, `provider_http_status`, `provider_code`,
+`provider_causes`, `message` e, quando disponível, o UUID local `payment_id`.
+Status/tipo ausentes ficam nulos. Códigos e mensagens externos só são registrados
+quando pertencem à allowlist de diagnóstico; demais valores recebem `[REDACTED]`.
+Não são registrados bodies, headers, SQL, traceback ou texto livre de exceções.
+
+Após falha do provider, a intenção já confirmada permanece `PENDING` com
+`checkout_state=creating`. Repetir checkout nessa assinatura retorna 409 sem
+chamar Mercado Pago: exige conciliação operacional antes de outra cobrança.
+Não apagar a intenção nem marcar `ready` apenas para repetir o teste. Uma preferência
+pode ter sido criada remotamente mesmo sem sucesso local. O logging não recupera
+a resposta de uma tentativa anterior e não altera essa proteção.
+
 As regras permanentes estão em [AGENTS.md](AGENTS.md). A etapa 18 autoriza integração inicial Mercado Pago e testes, preservando autenticação e licença, sem alterações no aplicativo DTF Manager.

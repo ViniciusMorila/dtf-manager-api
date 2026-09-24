@@ -17,6 +17,7 @@ from app.modules.payments.contracts import (
     PaymentUpdate,
     ProviderPayment,
 )
+from app.modules.payments.diagnostics import log_checkout_failure
 from app.modules.payments.models import Payment, PaymentStatus
 from app.modules.payments.provider import PaymentProvider
 from app.modules.payments.schemas import CheckoutResponse, PaymentResponse
@@ -70,6 +71,7 @@ class PaymentService:
         sucesso persiste a URL. Falha/crash exige conciliação operacional, sem recriação.
         """
         payment_id = uuid5(NAMESPACE_URL, f"dtf-manager:{provider.name}:{subscription_id}")
+        stage = "checkout_intent_persistence"
         try:
             with self._session.begin():
                 subscription = self._session.scalar(select(Subscription).where(
@@ -113,7 +115,9 @@ class PaymentService:
                 request = CheckoutCreate(user_id=user_id, subscription_id=subscription_id, payment_id=payment_id,
                     provider=provider.name, amount=plan.price, currency="BRL", description=description,
                     expires_at=expiration_at, notification_url=notification_url)
+            stage = "preference_create"
             preference = provider.create_checkout(request)
+            stage = "checkout_result_persistence"
             with self._session.begin():
                 payment = self._session.scalar(select(Payment).where(Payment.id == payment_id)
                     .with_for_update().execution_options(populate_existing=True))
@@ -123,7 +127,8 @@ class PaymentService:
                     "preference_id": preference.preference_id, "init_point": preference.init_point}
                 self._session.flush()
                 return CheckoutResponse(**self._public_payment(payment).model_dump(), init_point=preference.init_point)
-        except SQLAlchemyError:
+        except SQLAlchemyError as exc:
+            log_checkout_failure(stage=stage, payment_id=payment_id, error=exc)
             raise PaymentError("Checkout temporariamente indisponível.") from None
 
     def create_provider_charge(self, *, user_id: UUID, subscription_id: UUID,
