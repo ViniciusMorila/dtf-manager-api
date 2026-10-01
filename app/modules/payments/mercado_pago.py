@@ -38,6 +38,10 @@ class ProviderInvalidPayment(Exception):
 class InvalidSignature(Exception):
     """Notificação não autenticada."""
 
+    def __init__(self, reason: str = "invalid_signature") -> None:
+        super().__init__(reason)
+        self.reason: str = reason
+
 
 class ProviderResponseDecodeError(ValueError):
     """Preserva apenas o status HTTP quando o corpo não é JSON."""
@@ -101,14 +105,24 @@ class MercadoPagoPaymentProvider(PaymentProvider):
         return "mercado_pago"
 
     def validate_signature(self, signature: str, request_id: str, data_id: str) -> None:
-        if not signature.strip() or not request_id.strip() or not data_id.strip():
-            raise InvalidSignature()
+        for value, reason in ((signature, "missing_signature"), (request_id, "missing_request_id"),
+                              (data_id, "missing_data_id")):
+            if not value.strip():
+                raise InvalidSignature(reason)
+        # Não permitir que o parser do SDK escolha o último componente duplicado.
+        keys: list[str] = [part.split("=", 1)[0].strip().lower() for part in signature.split(",")]
+        if keys.count("ts") > 1 or keys.count("v1") > 1:
+            raise InvalidSignature("ambiguous_signature")
         assert self._settings.mercado_pago_webhook_secret is not None
         try:
+            # SDK: id:<id>;request-id:<request-id>;ts:<ts>; + HMAC-SHA256/compare_digest.
+            # ts permanece textual; não converter segundos/milissegundos nem limitar retries.
             WebhookSignatureValidator.validate(signature, request_id, data_id.lower(),
                 self._settings.mercado_pago_webhook_secret.get_secret_value())
-        except (InvalidWebhookSignatureError, ValueError, TypeError):
-            raise InvalidSignature() from None
+        except InvalidWebhookSignatureError as exc:
+            raise InvalidSignature(exc.reason.value) from None
+        except (ValueError, TypeError):
+            raise InvalidSignature("malformed_signature") from None
 
     def create_payment(self, payment: PaymentCreate, *, idempotency_key: str) -> ProviderPayment:
         if (payment.provider != self.name or payment.currency != "BRL" or payment.amount <= 0

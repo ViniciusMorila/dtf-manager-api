@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -136,6 +137,106 @@ def test_signature(provider: MercadoPagoPaymentProvider) -> None:
         (headers["x-signature"], "other", "AbC123"), (headers["x-signature"], "test-request", "999")]:
         with pytest.raises(InvalidSignature):
             provider.validate_signature(signature, request_id, data_id)
+
+
+@pytest.mark.parametrize("timestamp", ["1704908010", "1742505638683"])
+def test_official_manifest_literal(provider: MercadoPagoPaymentProvider, timestamp: str) -> None:
+    # Vetores textuais independentes do helper signed e do construtor de manifesto do SDK.
+    manifests = {
+        "1704908010": b"id:abc123;request-id:Request-ABC;ts:1704908010;",
+        "1742505638683": b"id:abc123;request-id:Request-ABC;ts:1742505638683;",
+    }
+    secret = provider._settings.mercado_pago_webhook_secret
+    assert secret is not None
+    digest = hmac.digest(secret.get_secret_value().encode(), manifests[timestamp], "sha256").hex()
+    provider.validate_signature(f"v1={digest}, ts={timestamp}", "Request-ABC", "AbC123")
+    with pytest.raises(InvalidSignature):
+        provider.validate_signature(f"v1={digest}, ts={timestamp}", "request-abc", "AbC123")
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("?data.id=123&type=payment", 200),
+    ("?id=123&topic=payment", 200),
+    ("?id=123&topic=merchant_order", 200),
+    ("?data.id=123&type=merchant_order", 200),
+    ("?data.id=123&type=topic_merchant_order_wh", 200),
+    ("?data.id=123&type=unknown", 200),
+    ("?data.id=123&topic=payment", 401),
+    ("?data.id=123&type=payment&topic=payment", 401),
+    ("?data.id=123&type=payment&type=merchant_order", 401),
+    ("?data.id=&type=payment", 401),
+    ("?id=123&type=payment", 401),
+    ("?data.id=%FF&type=payment", 401),
+])
+def test_notification_routing(provider: MercadoPagoPaymentProvider, intent: PaymentCreate,
+                              query: str, expected: int) -> None:
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: MagicMock(spec=Session)
+    app.dependency_overrides[get_provider] = lambda: provider
+    with TestClient(app) as client, patch.object(provider._sdk, "payment") as sdk, \
+            patch.object(PaymentService, "apply_provider_payment") as apply:
+        sdk.return_value.get.return_value = response(intent)
+        headers = {key.title(): value for key, value in signed(provider).items()}
+        result = client.post("/payments/mercado-pago/webhook" + query, headers=headers,
+                             content=b"{malformed body is not authoritative")
+        assert result.status_code == expected
+        if query == "?data.id=123&type=payment":
+            sdk.return_value.get.assert_called_once_with("123")
+            apply.assert_called_once()
+        else:
+            sdk.assert_not_called()
+            apply.assert_not_called()
+            if expected == 200:
+                assert result.json() == {"status": "ignored"}
+
+
+@pytest.mark.parametrize("problem,reason", [
+    ("x-signature", "missing_signature"), ("x-request-id", "missing_request_id"),
+    ("duplicate_ts", "ambiguous_signature"), ("duplicate_v1", "ambiguous_signature"),
+    ("wrong_hash", "SignatureMismatch"), ("duplicate_header", "ambiguous_headers"),
+])
+def test_safe_signature_diagnostics(provider: MercadoPagoPaymentProvider,
+                                    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+                                    problem: str, reason: str) -> None:
+    # Alembic fileConfig em outros testes pode desabilitar loggers já existentes.
+    monkeypatch.setattr(logging.getLogger("app.modules.payments.routes"), "disabled", False)
+    headers = signed(provider)
+    original_signature = headers["x-signature"]
+    if problem in headers:
+        del headers[problem]
+    elif problem == "duplicate_ts":
+        headers["x-signature"] += ",ts=1704908010"
+    elif problem == "duplicate_v1":
+        headers["x-signature"] += ",v1=00"
+    elif problem == "wrong_hash":
+        headers["x-signature"] = "ts=1704908010,v1=" + "0" * 64
+    header_list = list(headers.items())
+    if problem == "duplicate_header":
+        header_list.append(("X-Request-Id", "other"))
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: MagicMock(spec=Session)
+    app.dependency_overrides[get_provider] = lambda: provider
+    with TestClient(app) as client, patch.object(provider, "fetch_payment") as fetch:
+        result = client.post("/payments/mercado-pago/webhook?data.id=123&type=payment", headers=header_list)
+        assert result.status_code == 401
+        fetch.assert_not_called()
+    assert f"reason={reason}" in caplog.text
+    assert original_signature not in caplog.text
+    for secret in (provider._settings.mercado_pago_webhook_secret, provider._settings.mercado_pago_access_token):
+        assert secret is not None and secret.get_secret_value() not in caplog.text
+
+
+def test_unsigned_ipn_is_only_discarded(provider: MercadoPagoPaymentProvider) -> None:
+    app = create_app()
+    session = MagicMock(spec=Session)
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_provider] = lambda: provider
+    with TestClient(app) as client, patch.object(provider, "fetch_payment") as fetch:
+        result = client.post("/payments/mercado-pago/webhook?id=123&topic=payment",
+                             json={"status": "approved"})
+        assert result.status_code == 200 and result.json() == {"status": "ignored"}
+        fetch.assert_not_called()
+        session.begin.assert_not_called()
 
 
 @pytest.mark.parametrize("field,value", [("currency_id", "USD"), ("external_reference", None),

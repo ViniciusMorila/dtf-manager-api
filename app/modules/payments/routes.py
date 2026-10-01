@@ -78,17 +78,49 @@ def webhook(request: Request, session: SessionDependency,
             provider: Annotated[MercadoPagoPaymentProvider, Depends(get_provider)]) -> dict[str, str]:
     # Somente data.id da URL é coberto pela assinatura. Body não decide ID/status.
     ids: list[str] = request.query_params.getlist("data.id")
+    types: list[str] = request.query_params.getlist("type")
+    topics: list[str] = request.query_params.getlist("topic")
+    # Valores arbitrários da query/headers nunca entram nos logs.
+    def event_label(values: list[str]) -> str:
+        if not values:
+            return "absent"
+        return values[0] if len(values) == 1 and values[0] in {
+            "payment", "merchant_order", "topic_merchant_order_wh",
+        } else "other"
+
+    logger.info("event=mercado_pago_webhook_received notification_type=%s topic=%s "
+                "data_id_present=%s request_id_present=%s signature_present=%s",
+                event_label(types), event_label(topics), bool(ids),
+                bool(request.headers.get("x-request-id")), bool(request.headers.get("x-signature")))
     try:
+        if any(len(request.query_params.getlist(key)) > 1 for key in ("type", "topic", "id", "data.id")):
+            raise InvalidSignature("ambiguous_query")
+        if types and topics:
+            raise InvalidSignature("mixed_notification_formats")
+        # IPN não é autenticável pelo secret de Webhooks, mesmo contendo x-signature.
+        # ACK significa descarte, nunca confirmação de pagamento ou acesso ao provedor.
+        if topics and not types and not ids and request.query_params.get("id"):
+            logger.info("event=mercado_pago_webhook_ignored reason=unsupported_ipn")
+            return {"status": "ignored"}
+        if topics:
+            raise InvalidSignature("mixed_notification_formats")
         if len(ids) != 1:
-            raise InvalidSignature()
+            raise InvalidSignature("missing_data_id")
+        if any(len(request.headers.getlist(key)) > 1 for key in ("x-signature", "x-request-id")):
+            raise InvalidSignature("ambiguous_headers")
         provider.validate_signature(request.headers.get("x-signature", ""),
                                     request.headers.get("x-request-id", ""), ids[0])
+        logger.info("event=mercado_pago_webhook_verified")
+        if types and types != ["payment"]:
+            logger.info("event=mercado_pago_webhook_ignored reason=unsupported_event")
+            return {"status": "ignored"}
+        # Compatibilidade: data.id assinado sem type continua sendo Payments API.
         confirmed = provider.fetch_payment(ids[0])
         if confirmed.payment_id is None or confirmed.external_reference is None:
             raise ProviderInvalidPayment()
         PaymentService(session).apply_provider_payment(confirmed.payment_id, provider.name, confirmed)
-    except InvalidSignature:
-        logger.warning("mercado_pago webhook: assinatura inválida")
+    except InvalidSignature as exc:
+        logger.warning("event=mercado_pago_webhook_signature_invalid reason=%s", exc.reason)
         raise HTTPException(401, "Notificação não autenticada.") from None
     except (ProviderInvalidPayment, PaymentConflict, PaymentNotFound):
         logger.warning("mercado_pago webhook: confirmação incompatível")
@@ -96,5 +128,5 @@ def webhook(request: Request, session: SessionDependency,
     except (ProviderUnavailable, PaymentError):
         logger.warning("mercado_pago webhook: processamento indisponível")
         raise HTTPException(503, "Pagamento temporariamente indisponível.") from None
-    logger.info("mercado_pago webhook: pagamento conciliado")
+    logger.info("event=mercado_pago_payment_verified payment_id=%s", confirmed.provider_payment_id)
     return {"status": "ok"}

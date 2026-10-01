@@ -1,5 +1,8 @@
 # API DTF Manager
 
+Para diagnosticar assinaturas de Webhooks, distinguir IPN e recuperar um pagamento
+já aprovado sem nova cobrança, consulte o [procedimento operacional](docs/mercado_pago.md#auditoria-de-assinatura-e-recuperação).
+
 Etapa 18: Mercado Pago pelo SDK oficial, Pix interno preservado e Checkout Pro.
 O fluxo público agora oferece `GET /plans`, `POST /payments/checkout` e
 `GET /payments/{payment_id}`, além do webhook assinado.

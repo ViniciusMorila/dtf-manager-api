@@ -86,7 +86,9 @@ Somente PaymentService aplica APPROVED e ativa na mesma transação, sob locks.
 Repetições não estendem a assinatura. Não há filtro de idade do timestamp do webhook:
 reentregas são autenticadas e reconciliadas com o estado atual consultado no provedor.
 
-- 200: conciliação confirmada e commit concluído.
+- 200 `status=ok`: conciliação confirmada e commit concluído.
+- 200 `status=ignored`: IPN legado ou evento Webhook assinado não utilizado,
+  descartado sem consulta ou escrita de pagamento.
 - 401: assinatura inválida, inclusive hash não ASCII ou request-id vazio/em branco.
 - 409: pagamento inexistente no provedor ou no banco local, ou incompatível;
   nenhuma aprovação aplicada.
@@ -111,7 +113,96 @@ validada offline e os testes PostgreSQL são ignorados.
 
 Fontes oficiais:
 [SDK Python](https://github.com/mercadopago/sdk-python) e
-[Webhooks](https://www.mercadopago.com.br/developers/en/docs/wix/additional-content/your-integrations/notifications/webhooks).
+[Webhooks Checkout Pro](https://www.mercadopago.com.br/developers/pt/docs/checkout-pro/additional-content/notifications/webhooks).
+
+## Auditoria de assinatura e recuperação
+
+Validação desta revisão: 450 testes aprovados e 15 testes PostgreSQL ignorados.
+O PostgreSQL local não respondeu na primeira execução; a suíte completa foi
+executada sem carregar o `.env` local, preservando a leitura de `.env` nos testes
+específicos de configuração. Ruff, compileall, pip check e Uvicorn com /health
+passaram. Não há verificador estático de tipos configurado. Nenhuma migration,
+cobrança real, reconciliação de produção ou alteração manual de banco foi feita.
+
+O cálculo anterior já utilizava o SDK oficial: extrai `ts` e `v1`, calcula
+HMAC-SHA256 sobre `id:<data.id>;request-id:<x-request-id>;ts:<ts>;` e compara
+com `hmac.compare_digest`. ID vem exclusivamente da query `data.id`, convertido
+para lowercase; request-id mantém capitalização e ts permanece textual, sem
+conversão de unidade. Headers HTTP são lidos sem distinção de maiúsculas.
+Referência para manifesto e lowercase:
+[validação de origem](https://www.mercadopago.com.mx/developers/en/docs/wallet-connect/notifications).
+
+O defeito confirmado era tratar IPN e Webhooks indiscriminadamente e perder o
+motivo da rejeição. `id=...&topic=payment` NÃO substitui `data.id=...&type=payment`.
+A [documentação IPN](https://www.mercadopago.com.br/developers/pt/docs/checkout-pro/additional-content/notifications/ipn)
+explica que IPNs não podem ser validados com o secret de Webhooks, mesmo contendo
+x-signature. São descartados com ACK, sem consultar provedor ou ativar licença.
+Webhooks de outros tipos exigem assinatura antes do descarte. Por compatibilidade,
+data.id assinado sem type continua sendo tratado como Payments API. Body nunca
+seleciona ID, status ou identidade; body malformado não é interpretado.
+
+Query duplicada, mistura type/topic ou data.id/topic, headers duplicados e ts/v1
+duplicados são rejeitados. Ausência de assinatura, request-id ou data.id também.
+O SDK permite omitir componentes ausentes no manifesto genérico; este endpoint
+exige todos esses componentes para processar pagamentos.
+
+O log antigo não permite atribuir a falha do Webhook com data.id a secret incorreto
+ou headers ausentes. Os novos eventos `mercado_pago_webhook_received`,
+`mercado_pago_webhook_signature_invalid` (reason), `mercado_pago_webhook_verified`
+e `mercado_pago_payment_verified` distinguem essas situações sem registrar headers,
+hashes ou credenciais. `SignatureMismatch` exige conferir privadamente se o secret
+no Railway pertence à mesma aplicação que enviou a notificação. Conferir também
+URL, ambiente e proxy; não regenerar secrets apenas para diagnosticar.
+
+### Após deploy, sem nova cobrança
+
+1. Confirmar deployment saudável e GET /health retornando 200.
+2. Em Suas integrações → aplicação correta → Webhooks, verificar URL HTTPS e evento
+   Pagamentos, secret e ambiente correspondentes no Railway. A URL da preferência
+   pode prevalecer sobre a URL do painel.
+3. Localizar a entrega falha do recurso **181747884718** (ID externo, não UUID local).
+   A documentação confirma retries automáticos e o painel de detalhes. Usar
+   reenvio/recuperação se disponível na conta; não presumir que toda interface tenha
+   um botão específico. Se houver simulação com ID configurável, informar esse
+   pagamento existente. ID fictício deve falhar na consulta/conciliação.
+4. A entrega precisa usar `data.id=181747884718&type=payment` e assinatura produzida
+   pelo Mercado Pago. Esperar `status=ok`, webhook_verified e payment_verified.
+   `status=ignored` só comprova descarte, não comprova conciliação.
+5. Com JWT do titular, consultar GET /payments/{UUID_LOCAL} e GET /license/status:
+   APPROVED/ACTIVE, plano correto e datas preenchidas (vitalício sem vencimento).
+6. Reentregar e conferir que IDs e datas não mudam. Um POST sem assinatura para a
+   URL payment deve retornar 401 sem alterar esses resultados.
+
+### Alternativa operacional restrita
+
+Se não for possível reentregar, um operador autorizado pode executar o serviço
+existente no console privado do Railway (acesso controlado pela conta/equipe),
+após conferir aplicação e ambiente. Não é endpoint público, não recebe status ou
+valor arbitrários e não faz SQL manual. Não executar na máquina do aplicativo.
+Este exemplo não foi executado em produção nesta correção:
+
+```python
+from sqlalchemy.orm import Session
+from app.core.config import Settings
+from app.db.session import get_engine
+from app.modules.payments.mercado_pago import MercadoPagoPaymentProvider
+from app.modules.payments.service import PaymentService
+
+provider = MercadoPagoPaymentProvider(Settings())
+confirmed = provider.fetch_payment("181747884718")
+if confirmed.payment_id is None or confirmed.external_reference is None:
+    raise RuntimeError("Pagamento sem referências locais; não conciliar.")
+with Session(get_engine()) as session:
+    result = PaymentService(session).apply_provider_payment(
+        confirmed.payment_id, provider.name, confirmed
+    )
+    print(result.status.value)
+```
+
+A consulta server-to-server valida ID e ambiente. PaymentService valida intenção,
+assinatura, usuário, referência, preço e moeda e aplica aprovação/ativação na mesma
+transação idempotente. Investigar divergências; não alterar dados no banco para
+forçar aprovação. GET /payments/{payment_id} é somente leitura e não reconcilia.
 
 ## Revisão da etapa 18 e roteiro de teste
 
