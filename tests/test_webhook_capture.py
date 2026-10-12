@@ -7,8 +7,9 @@ from app.modules.payments.diagnostics import capture_webhook_headers
 
 
 @pytest.mark.parametrize("enabled,payment,emits", [
-    (False, "182705996051", False),
-    (True, "182705996051", True),
+    (False, "183729938334", False),
+    (True, "183729938334", True),
+    (True, "182705996051", False),
     (True, "999", False),
 ])
 def test_capture_is_opt_in_and_scoped(enabled: bool, payment: str, emits: bool,
@@ -30,7 +31,7 @@ def test_capture_is_opt_in_and_scoped(enabled: bool, payment: str, emits: bool,
 def test_capture_redacts_injection_and_duplicates(caplog: pytest.LogCaptureFixture,
                                                 monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(logging.getLogger("app.modules.payments.diagnostics"), "disabled", False)
-    capture_webhook_headers(enabled=True, data_ids=["182705996051"],
+    capture_webhook_headers(enabled=True, data_ids=["183729938334"],
                             signatures=["untrusted\nheader"], request_ids=["one", "two"])
     event = json.loads(caplog.records[0].message)
     assert event["x-signature"] == event["x-request-id"] == "[REDACTED]"
@@ -38,5 +39,5 @@ def test_capture_redacts_injection_and_duplicates(caplog: pytest.LogCaptureFixtu
     with monkeypatch.context() as context:
         context.setattr("app.modules.payments.diagnostics.logger.warning",
                         lambda *args: (_ for _ in ()).throw(RuntimeError()))
-        capture_webhook_headers(enabled=True, data_ids=["182705996051"],
+        capture_webhook_headers(enabled=True, data_ids=["183729938334"],
                                 signatures=[], request_ids=[])
