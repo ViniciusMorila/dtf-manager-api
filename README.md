@@ -685,3 +685,11 @@ pode ter sido criada remotamente mesmo sem sucesso local. O logging não recuper
 a resposta de uma tentativa anterior e não altera essa proteção.
 
 As regras permanentes estão em [AGENTS.md](AGENTS.md). A etapa 18 autoriza integração inicial Mercado Pago e testes, preservando autenticação e licença, sem alterações no aplicativo DTF Manager.
+
+### Diagnóstico temporário de Webhooks
+
+`MERCADO_PAGO_WEBHOOK_DIAGNOSTICS=false` por padrão. Ative com `true` para registrar
+identificadores numéricos, request-id UUID, timestamp, formato de v1, SDK, deployment
+e resultados HMAC/conciliação. Valores fora dos formatos permitidos são redigidos.
+Não registra assinatura, hashes, credenciais ou dados pessoais. Usa WARNING para
+aparecer no Railway. Desative após a investigação. Não altera autenticação ou conciliação.

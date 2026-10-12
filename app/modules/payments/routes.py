@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from app.core.config import Settings
 from app.db.session import SessionDependency
 from app.modules.auth.dependencies import CurrentUserDependency
-from app.modules.payments.diagnostics import log_checkout_failure
+from app.modules.payments.diagnostics import capture_webhook_headers, log_checkout_failure, log_webhook_diagnostic
 from app.modules.payments.mercado_pago import (
     InvalidSignature,
     MercadoPagoPaymentProvider,
@@ -92,6 +92,11 @@ def webhook(request: Request, session: SessionDependency,
                 "data_id_present=%s request_id_present=%s signature_present=%s",
                 event_label(types), event_label(topics), bool(ids),
                 bool(request.headers.get("x-request-id")), bool(request.headers.get("x-signature")))
+    settings = Settings()
+    diagnostics_enabled = settings.mercado_pago_webhook_diagnostics
+    capture_webhook_headers(enabled=settings.mercado_pago_webhook_capture, data_ids=ids,
+                            signatures=request.headers.getlist("x-signature"),
+                            request_ids=request.headers.getlist("x-request-id"))
     try:
         if any(len(request.query_params.getlist(key)) > 1 for key in ("type", "topic", "id", "data.id")):
             raise InvalidSignature("ambiguous_query")
@@ -117,15 +122,20 @@ def webhook(request: Request, session: SessionDependency,
         # Compatibilidade: data.id assinado sem type continua sendo Payments API.
         confirmed = provider.fetch_payment(ids[0])
         if confirmed.payment_id is None or confirmed.external_reference is None:
-            raise ProviderInvalidPayment()
+            raise ProviderInvalidPayment(reason="missing_references")
         PaymentService(session).apply_provider_payment(confirmed.payment_id, provider.name, confirmed)
     except InvalidSignature as exc:
         logger.warning("event=mercado_pago_webhook_signature_invalid reason=%s", exc.reason)
         raise HTTPException(401, "Notificação não autenticada.") from None
-    except (ProviderInvalidPayment, PaymentConflict, PaymentNotFound):
+    except (ProviderInvalidPayment, PaymentConflict, PaymentNotFound) as exc:
+        reason = (exc.reason if isinstance(exc, ProviderInvalidPayment) else
+                  "local_payment_not_found" if isinstance(exc, PaymentNotFound) else "reconciliation_conflict")
+        log_webhook_diagnostic(enabled=diagnostics_enabled, stage="reconciliation", result=reason)
         logger.warning("mercado_pago webhook: confirmação incompatível")
         raise HTTPException(409, "Pagamento não conciliado.") from None
-    except (ProviderUnavailable, PaymentError):
+    except (ProviderUnavailable, PaymentError) as exc:
+        log_webhook_diagnostic(enabled=diagnostics_enabled, stage="reconciliation",
+            result="provider_unavailable" if isinstance(exc, ProviderUnavailable) else "persistence_or_activation_failed")
         logger.warning("mercado_pago webhook: processamento indisponível")
         raise HTTPException(503, "Pagamento temporariamente indisponível.") from None
     logger.info("event=mercado_pago_payment_verified payment_id=%s", confirmed.provider_payment_id)

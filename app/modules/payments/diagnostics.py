@@ -6,6 +6,34 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
+
+def capture_webhook_headers(*, enabled: bool, data_ids: list[str],
+                            signatures: list[str], request_ids: list[str]) -> None:
+    """Temporary, opt-in capture for one payment; never accepts other headers."""
+    if not enabled or data_ids != ["182705996051"]:
+        return
+    import re
+
+    def safe_header(values: list[str], pattern: str, maximum: int) -> str | None:
+        if not values:
+            return None
+        if len(values) != 1 or len(values[0]) > maximum:
+            return "[REDACTED]"
+        return values[0] if re.fullmatch(pattern, values[0]) else "[REDACTED]"
+
+    try:
+        event = {
+            "event": "mercado_pago_webhook_capture",
+            "data.id": data_ids[0],
+            "x-signature": safe_header(signatures,
+                r" *(?:ts=[0-9]{1,20} *, *v1=[0-9a-fA-F]{64}|v1=[0-9a-fA-F]{64} *, *ts=[0-9]{1,20}) *", 128),
+            "x-request-id": safe_header(request_ids,
+                r" *[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12} *", 80),
+        }
+        logger.warning(json.dumps(event, ensure_ascii=True))
+    except Exception:
+        return
+
 # Somente literais conhecidos podem sair de respostas externas para os logs.
 # Mensagens desconhecidas são omitidas integralmente, pois podem ecoar credenciais.
 SAFE_CODES = frozenset({
@@ -55,3 +83,66 @@ def log_checkout_failure(*, stage: str, payment_id: UUID | None = None,
                    or "Checkout failed; raw exception and response omitted.",
     }
     logger.warning(json.dumps(event, ensure_ascii=True))
+
+
+# Temporary opt-in diagnostics. Never log arbitrary header/body/exception values.
+def _emit_webhook_diagnostic(*, enabled: bool, stage: str, result: str,
+                           data_id: str = "", request_id: str = "",
+                           signature: str = "") -> None:
+    """Emit bounded identifiers and signature shape, never signature/hash material."""
+    if not enabled:
+        return
+    import os
+    import re
+    from importlib.metadata import version
+
+    def identifier(value: str, *, numeric: bool = False) -> str | None:
+        if not value:
+            return None
+        pattern = r"[0-9]{1,64}" if numeric else r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+        return value if re.fullmatch(pattern, value) else "[REDACTED]"
+
+    timestamps: list[str] = []
+    hashes: list[str] = []
+    for part in signature.split(","):
+        key, separator, value = part.partition("=")
+        if separator:
+            if key.strip().lower() == "ts":
+                timestamps.append(value.strip())
+            elif key.strip().lower() == "v1":
+                hashes.append(value.strip())
+    ts = timestamps[0] if len(timestamps) == 1 else ""
+    digest = hashes[0] if len(hashes) == 1 else ""
+    safe_results = {"valid", "invalid", "provider_not_found", "provider_response_invalid",
+                    "environment_mismatch", "local_payment_not_found", "reconciliation_conflict",
+                    "provider_unavailable", "persistence_or_activation_failed", "missing_references"}
+    event = {
+        "event": "mercado_pago_webhook_diagnostic",
+        "stage": stage if stage in {"hmac", "reconciliation"} else "unknown",
+        "result": result if result in safe_results else "unknown",
+        "data_id_received": identifier(data_id, numeric=True),
+        "data_id_normalized": identifier(data_id.lower().strip(), numeric=True),
+        "request_id": identifier(request_id.strip()),
+        "timestamp": identifier(ts, numeric=True),
+        "signature_present": bool(signature), "request_id_present": bool(request_id),
+        "timestamp_count": len(timestamps), "v1_count": len(hashes),
+        "v1_length": len(digest),
+        "v1_valid_hex": bool(re.fullmatch(r"[0-9a-fA-F]{64}", digest)),
+        "sdk_version": version("mercadopago"),
+        "deployment_id": identifier(os.environ.get("RAILWAY_DEPLOYMENT_ID", "")),
+    }
+    logger.warning(json.dumps(event, ensure_ascii=True))
+
+
+def log_webhook_diagnostic(*, enabled: bool, stage: str, result: str,
+                           data_id: str = "", request_id: str = "",
+                           signature: str = "") -> None:
+    """Diagnostic failures must never affect authentication or payment processing."""
+    if not enabled:
+        return
+    try:
+        _emit_webhook_diagnostic(enabled=True, stage=stage, result=result,
+                                 data_id=data_id, request_id=request_id, signature=signature)
+    except Exception:
+        # No fallback logging: exceptions can contain sensitive input.
+        return

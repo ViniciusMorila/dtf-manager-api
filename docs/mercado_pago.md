@@ -156,6 +156,23 @@ URL, ambiente e proxy; não regenerar secrets apenas para diagnosticar.
 
 ### Após deploy, sem nova cobrança
 
+#### Captura temporária do pagamento 182705996051
+
+Ativar `MERCADO_PAGO_WEBHOOK_CAPTURE=true` no ambiente do backend e fazer deploy.
+Solicitar o reenvio da notificação existente no Mercado Pago. Procurar o evento
+`mercado_pago_webhook_capture`: uma única linha JSON contém `data.id`,
+`x-signature` e `x-request-id` da mesma requisição, antes da validação HMAC.
+A captura é restrita ao ID 182705996051; não lê body nem outros headers e não
+registra secret ou Access Token. Valores ausentes aparecem como null; duplicados,
+formatos inesperados e valores excessivos aparecem como `[REDACTED]`.
+Somente assinaturas ts/v1 e request IDs UUID passam pelo filtro. Espaços aceitos
+são preservados. A validação e a conciliação continuam obrigatórias.
+
+Copiar os três valores da mesma linha para a reprodução privada do HMAC; nunca
+misturar headers de entregas diferentes. Depois da captura, desativar
+`MERCADO_PAGO_WEBHOOK_CAPTURE=false` e fazer redeploy. Restringir acesso ao log
+e removê-lo conforme a retenção operacional após o diagnóstico.
+
 1. Confirmar deployment saudável e GET /health retornando 200.
 2. Em Suas integrações → aplicação correta → Webhooks, verificar URL HTTPS e evento
    Pagamentos, secret e ambiente correspondentes no Railway. A URL da preferência

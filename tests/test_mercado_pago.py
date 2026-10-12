@@ -609,3 +609,94 @@ def test_postgresql_charge_and_duplicate_notification(provider: MercadoPagoPayme
                     .where(Payment.subscription_id == subscription_id)) == 1
         finally:
             outer.rollback()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("valid", [False, True])
+def test_opt_in_hmac_diagnostics(provider: MercadoPagoPaymentProvider,
+                                 caplog: pytest.LogCaptureFixture,
+                                 monkeypatch: pytest.MonkeyPatch,
+                                 enabled: bool, valid: bool) -> None:
+    import json
+    monkeypatch.setattr(logging.getLogger("app.modules.payments.diagnostics"), "disabled", False)
+    provider._settings.mercado_pago_webhook_diagnostics = enabled
+    request_id = str(uuid4())
+    deployment_id = str(uuid4())
+    monkeypatch.setenv("RAILWAY_DEPLOYMENT_ID", deployment_id)
+    secret = provider._settings.mercado_pago_webhook_secret
+    assert secret is not None
+    digest = hmac.digest(secret.get_secret_value().encode(),
+        f"id:123;request-id:{request_id};ts:1704908010;".encode(), "sha256").hex()
+    supplied = digest if valid else "0" * 64
+    signature = f"ts=1704908010,v1={supplied}"
+    if valid:
+        provider.validate_signature(signature, request_id, "123")
+    else:
+        with pytest.raises(InvalidSignature):
+            provider.validate_signature(signature, request_id, "123")
+    events = [json.loads(r.message) for r in caplog.records if r.name == "app.modules.payments.diagnostics"]
+    assert bool(events) is enabled
+    if enabled:
+        event = events[-1]
+        assert event["result"] == ("valid" if valid else "invalid")
+        assert event["data_id_received"] == event["data_id_normalized"] == "123"
+        assert event["request_id"] == request_id
+        assert event["timestamp"] == "1704908010"
+        assert event["v1_length"] == 64 and event["v1_valid_hex"] is True
+        assert event["deployment_id"] == deployment_id
+        assert event["sdk_version"]
+    for value in (signature, digest, supplied, secret.get_secret_value()):
+        assert value not in caplog.text
+
+
+def test_diagnostics_redacts_untrusted_values(caplog: pytest.LogCaptureFixture,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    from app.modules.payments.diagnostics import log_webhook_diagnostic
+    monkeypatch.setattr(logging.getLogger("app.modules.payments.diagnostics"), "disabled", False)
+    personal = "person@example.com\nforged-log"
+    monkeypatch.setenv("RAILWAY_DEPLOYMENT_ID", personal)
+    log_webhook_diagnostic(enabled=True, stage="hmac", result="invalid", data_id=personal,
+        request_id=personal, signature=f"ts={personal},v1={personal}")
+    assert personal not in caplog.text and "person@example.com" not in caplog.text
+    event = json.loads(caplog.records[-1].message)
+    assert event["request_id"] == "[REDACTED]"
+    assert event["timestamp"] == "[REDACTED]"
+    assert event["v1_valid_hex"] is False
+
+
+@pytest.mark.parametrize("problem,reason", [("not_found", "provider_not_found"),
+                                            ("environment", "environment_mismatch")])
+def test_authenticated_reconciliation_diagnostics(provider: MercadoPagoPaymentProvider,
+        intent: PaymentCreate, caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch, problem: str, reason: str) -> None:
+    import json
+    monkeypatch.setenv("MERCADO_PAGO_WEBHOOK_DIAGNOSTICS", "true")
+    monkeypatch.setattr(logging.getLogger("app.modules.payments.diagnostics"), "disabled", False)
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: MagicMock(spec=Session)
+    app.dependency_overrides[get_provider] = lambda: provider
+    result = response(intent)
+    if problem == "not_found":
+        result = {"status": 404, "response": {}}
+    else:
+        result["response"]["live_mode"] = True
+    with TestClient(app) as client, patch.object(provider._sdk, "payment") as sdk, \
+            patch.object(PaymentService, "apply_provider_payment") as apply:
+        sdk.return_value.get.return_value = result
+        reply = client.post("/payments/mercado-pago/webhook?data.id=123&type=payment",
+                            headers=signed(provider))
+        assert reply.status_code == 409
+        apply.assert_not_called()
+    events = [json.loads(r.message) for r in caplog.records if r.name == "app.modules.payments.diagnostics"]
+    assert events[-1]["stage"] == "reconciliation"
+    assert events[-1]["result"] == reason
+
+
+def test_diagnostic_failure_preserves_hmac(provider: MercadoPagoPaymentProvider) -> None:
+    provider._settings.mercado_pago_webhook_diagnostics = True
+    headers = signed(provider)
+    with patch("app.modules.payments.diagnostics.logger.warning", side_effect=RuntimeError("logging failed")):
+        provider.validate_signature(headers["x-signature"], headers["x-request-id"], "123")
+        with pytest.raises(InvalidSignature):
+            provider.validate_signature(headers["x-signature"], "changed-request", "123")

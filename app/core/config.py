@@ -19,6 +19,8 @@ class Settings(BaseSettings):
 
     app_name: str = Field(default="API DTF Manager", validation_alias="DTF_APP_NAME")
     database_url: SecretStr | None = None
+    mercado_pago_webhook_diagnostics: bool = False
+    mercado_pago_webhook_capture: bool = False
     mercado_pago_access_token: SecretStr | None = None
     mercado_pago_webhook_secret: SecretStr | None = None
     mercado_pago_environment: Literal["test", "production"] | None = None

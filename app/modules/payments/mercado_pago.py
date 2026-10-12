@@ -22,7 +22,7 @@ from app.modules.payments.contracts import (
     PaymentCreate,
     ProviderPayment,
 )
-from app.modules.payments.diagnostics import log_checkout_failure
+from app.modules.payments.diagnostics import log_checkout_failure, log_webhook_diagnostic
 from app.modules.payments.models import PaymentStatus
 from app.modules.payments.provider import PaymentProvider
 
@@ -33,6 +33,10 @@ class ProviderUnavailable(Exception):
 
 class ProviderInvalidPayment(Exception):
     """Pagamento ausente ou resposta externa incompatível."""
+
+    def __init__(self, message: str = "", *, reason: str = "provider_response_invalid") -> None:
+        super().__init__(message)
+        self.reason: str = reason
 
 
 class InvalidSignature(Exception):
@@ -120,9 +124,13 @@ class MercadoPagoPaymentProvider(PaymentProvider):
             WebhookSignatureValidator.validate(signature, request_id, data_id.lower(),
                 self._settings.mercado_pago_webhook_secret.get_secret_value())
         except InvalidWebhookSignatureError as exc:
+            log_webhook_diagnostic(enabled=self._settings.mercado_pago_webhook_diagnostics,
+                stage="hmac", result="invalid", data_id=data_id, request_id=request_id, signature=signature)
             raise InvalidSignature(exc.reason.value) from None
         except (ValueError, TypeError):
             raise InvalidSignature("malformed_signature") from None
+        log_webhook_diagnostic(enabled=self._settings.mercado_pago_webhook_diagnostics,
+            stage="hmac", result="valid", data_id=data_id, request_id=request_id, signature=signature)
 
     def create_payment(self, payment: PaymentCreate, *, idempotency_key: str) -> ProviderPayment:
         if (payment.provider != self.name or payment.currency != "BRL" or payment.amount <= 0
@@ -200,7 +208,7 @@ class MercadoPagoPaymentProvider(PaymentProvider):
         if not isinstance(result, dict) or not isinstance(result.get("status"), int):
             raise ProviderInvalidPayment("Resposta de pagamento inválida.")
         if result["status"] == 404:
-            raise ProviderInvalidPayment("Pagamento não encontrado.")
+            raise ProviderInvalidPayment("Pagamento não encontrado.", reason="provider_not_found")
         if not 200 <= result["status"] < 300:
             raise ProviderUnavailable("Falha na API de pagamentos.")
         try:
@@ -211,7 +219,7 @@ class MercadoPagoPaymentProvider(PaymentProvider):
                     or data["metadata"]["payment_id"] is None):
                 raise ValueError("Identidade ou moeda inválida")
             if data["live_mode"] is not (self._settings.mercado_pago_environment == "production"):
-                raise ValueError("Ambiente divergente")
+                raise ProviderInvalidPayment("Resposta de pagamento inválida.", reason="environment_mismatch")
             amount: Any = data["transaction_amount"]
             if isinstance(amount, (float, bool)):
                 raise TypeError("Valor sem precisão decimal")
