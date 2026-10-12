@@ -156,6 +156,36 @@ URL, ambiente e proxy; não regenerar secrets apenas para diagnosticar.
 
 ### Após deploy, sem nova cobrança
 
+#### Diagnóstico somente leitura de environment_mismatch
+
+Executar dentro do container Railway do backend, com o ambiente real do serviço:
+
+```sh
+/app/.venv/bin/python -m scripts.diagnose_payment_environment --expected-application-id ID_NUMERICO_DA_APLICACAO
+```
+
+Não executar localmente nem usar `railway run` para concluir qual configuração o
+container carregou. O ID esperado vem da aplicação correta no painel; não é
+token nem secret. Não é necessário ativar flags ou reenviar webhook. O comando
+consulta somente GET /v1/payments/182705996051 e GET /users/me pelo mesmo SDK e
+Access Token do provider. Usa Settings no container e o mesmo parser de
+fetch_payment. Não importa sessões de banco nem chama PaymentService.
+
+A saída registra live_mode estritamente booleano, ambiente carregado, resultado
+do parser, igualdade entre collector_id e a conta autenticada, tag test_user e
+igualdade entre application_id do pagamento e o ID informado. Não imprime IDs de
+conta, tags completas, nomes, emails, corpo da resposta, token ou secret.
+Valores indisponíveis são null; erros não expõem mensagens externas.
+
+GET /users/me comprova a conta do token, mas não comprova sua aplicação de origem.
+`token_application_verified=false` é uma limitação do diagnóstico, não uma
+divergência confirmada. Conferir privadamente que o token configurado no Railway
+é a credencial da aplicação esperada no painel; não inferir aplicação pelo prefixo
+do token. Se application_id não vier na resposta, a aplicação do pagamento também
+permanece inconclusiva. Uma conta de teste sozinha não redefine live_mode.
+Com esses dados, avaliar configuração e semântica do fluxo de teste antes de
+qualquer correção. A validação atual permanece inalterada.
+
 #### Captura temporária do pagamento 182705996051
 
 Ativar `MERCADO_PAGO_WEBHOOK_CAPTURE=true` no ambiente do backend e fazer deploy.

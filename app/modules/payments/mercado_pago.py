@@ -204,6 +204,70 @@ class MercadoPagoPaymentProvider(PaymentProvider):
             raise ProviderInvalidPayment("Identificador divergente.")
         return payment
 
+    def diagnose_payment_environment(self, expected_application_id: str) -> dict[str, Any]:
+        """Read-only, allowlisted diagnostics for the incident payment only."""
+        def identifier(value: Any) -> str | None:
+            if type(value) not in (int, str):
+                return None
+            text = str(value)
+            return text if text.isascii() and text.isdigit() and len(text) <= 64 else None
+
+        def body(result: Any) -> dict[str, Any]:
+            if (isinstance(result, dict) and type(result.get("status")) is int
+                    and 200 <= result["status"] < 300 and isinstance(result.get("response"), dict)):
+                return result["response"]
+            return {}
+
+        expected = identifier(expected_application_id)
+        if expected is None:
+            raise ValueError("Application ID must be numeric.")
+        event: dict[str, Any] = {
+            "event": "mercado_pago_environment_diagnostic",
+            "payment_id": "182705996051",
+            "loaded_environment": self._settings.mercado_pago_environment,
+            "expected_live_mode": self._settings.mercado_pago_environment == "production",
+            "payment_fetch_ok": False, "payment_id_matches": None,
+            "live_mode": None, "live_mode_type": "unavailable",
+            "validation_result": "unavailable", "token_account_fetch_ok": False,
+            "seller_matches_token_account": None, "token_account_is_test_user": None,
+            "payment_application_matches_expected": None,
+            "token_application_verified": False,
+        }
+        try:
+            # Same SDK GET and parser as fetch_payment; never reconcile or write to DB.
+            result = self._sdk.payment().get("182705996051")
+            payment = body(result)
+            event["payment_fetch_ok"] = bool(payment)
+            event["payment_id_matches"] = identifier(payment.get("id")) == "182705996051" if payment else None
+            live = payment.get("live_mode")
+            event["live_mode"] = live if type(live) is bool else None
+            event["live_mode_type"] = ("bool" if type(live) is bool else
+                                       "missing" if "live_mode" not in payment else "invalid")
+            application = identifier(payment.get("application_id"))
+            event["payment_application_matches_expected"] = application == expected if application else None
+            try:
+                self._parse(result)
+                event["validation_result"] = "valid"
+            except ProviderInvalidPayment as exc:
+                event["validation_result"] = exc.reason
+            except ProviderUnavailable:
+                event["validation_result"] = "provider_unavailable"
+        except Exception:
+            payment = {}
+        try:
+            account = body(self._sdk.user().get())
+            event["token_account_fetch_ok"] = bool(account)
+            collector = identifier(payment.get("collector_id"))
+            account_id = identifier(account.get("id"))
+            if collector and account_id:
+                event["seller_matches_token_account"] = collector == account_id
+            tags = account.get("tags")
+            if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
+                event["token_account_is_test_user"] = "test_user" in tags
+        except Exception:
+            pass
+        return event
+
     def _parse(self, result: Any) -> ProviderPayment:
         if not isinstance(result, dict) or not isinstance(result.get("status"), int):
             raise ProviderInvalidPayment("Resposta de pagamento inválida.")
