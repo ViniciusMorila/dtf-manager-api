@@ -20,7 +20,11 @@ from app.core.config import Settings
 from app.db.session import get_session
 from app.main import create_app
 from app.modules.auth.dependencies import AuthenticatedUser, get_current_user
-from app.modules.payments.contracts import CheckoutCreate, CheckoutPreference
+from app.modules.payments.contracts import (
+    CheckoutCreate,
+    CheckoutPreference,
+    ProviderPayment,
+)
 from app.modules.payments.diagnostics import log_checkout_failure
 from app.modules.payments.mercado_pago import (
     MercadoPagoPaymentProvider,
@@ -101,6 +105,90 @@ def start(client: TestClient, db: MagicMock, **extra: Any) -> Any:
 
 def preference() -> CheckoutPreference:
     return CheckoutPreference(preference_id="test-preference", init_point="https://www.mercadopago.com.br/checkout/test")
+
+
+@pytest.mark.parametrize("preference_id,state", [("wrong", "ready"), (None, "ready"),
+                                                ("test-preference", "creating")])
+def test_test_seller_requires_local_preference(db: MagicMock, preference_id: str | None, state: str) -> None:
+    sub = db.records[Subscription]
+    payment = Payment(id=uuid4(), user_id=sub.user_id, subscription_id=sub.id, provider="mercado_pago",
+        amount=Decimal("79.90"), currency="BRL", status=PaymentStatus.PENDING,
+        payment_metadata={"checkout_state": state, "preference_id": preference_id})
+    db.records[Payment] = payment
+    confirmation = ProviderPayment(provider_payment_id="123", amount=payment.amount, currency="BRL",
+        status=PaymentStatus.APPROVED, external_reference=sub.id, payment_id=payment.id,
+        payment_environment="test", verified_preference_id="test-preference")
+    with pytest.raises(PaymentConflict), patch("app.modules.payments.service.SubscriptionService") as activation:
+        PaymentService(db).apply_provider_payment(payment.id, "mercado_pago", confirmation)
+    activation.assert_not_called()
+    assert payment.status == PaymentStatus.PENDING
+
+
+def test_test_payment_cannot_cross_into_real_api(db: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    sub = db.records[Subscription]
+    payment = Payment(id=uuid4(), user_id=sub.user_id, subscription_id=sub.id, provider="mercado_pago",
+        amount=Decimal("79.90"), currency="BRL", status=PaymentStatus.PENDING)
+    db.records[Payment] = payment
+    confirmation = ProviderPayment(provider_payment_id="123", amount=payment.amount, currency="BRL",
+        status=PaymentStatus.APPROVED, external_reference=sub.id, payment_id=payment.id,
+        payment_environment="test", verified_preference_id="test-preference")
+    settings = Settings(_env_file=None, environment="testing")
+    settings.environment = "production"
+    monkeypatch.setattr("app.modules.payments.service.Settings", lambda: settings)
+    with pytest.raises(PaymentConflict), patch("app.modules.payments.service.SubscriptionService") as activation:
+        PaymentService(db).apply_provider_payment(payment.id, "mercado_pago", confirmation)
+    activation.assert_not_called()
+    assert payment.status == PaymentStatus.PENDING
+
+
+def test_real_confirmation_cannot_reclassify_test_intent(db: MagicMock) -> None:
+    sub = db.records[Subscription]
+    payment = Payment(id=uuid4(), user_id=sub.user_id, subscription_id=sub.id, provider="mercado_pago",
+        amount=Decimal("79.90"), currency="BRL", status=PaymentStatus.PENDING,
+        payment_metadata={"payment_environment": "test"})
+    db.records[Payment] = payment
+    confirmation = ProviderPayment(provider_payment_id="123", amount=payment.amount, currency="BRL",
+        status=PaymentStatus.APPROVED, external_reference=sub.id, payment_id=payment.id,
+        payment_environment="production")
+    with pytest.raises(PaymentConflict):
+        PaymentService(db).apply_provider_payment(payment.id, "mercado_pago", confirmation)
+    assert payment.status == PaymentStatus.PENDING
+
+
+def test_verified_test_checkout_webhook_activates_once(db: MagicMock, provider: MercadoPagoPaymentProvider) -> None:
+    provider._settings.mercado_pago_checkout_test_seller = True
+    provider._settings.mercado_pago_application_id = "333"
+    with client_for(db, provider) as client, patch.object(provider, "create_checkout", return_value=preference()):
+        assert start(client, db).status_code == 200
+        payment = db.records[Payment]
+        reference = str(payment.subscription_id)
+        local_id = str(payment.id)
+        with patch.object(provider._sdk, "payment") as sdk, patch.object(provider._sdk, "user") as user, \
+                patch.object(provider._sdk, "merchant_order") as order, patch.object(provider._sdk, "preference") as pref:
+            sdk.return_value.get.return_value = {"status": 200, "response": {
+                "id": 123, "live_mode": True, "collector_id": 111,
+                "order": {"id": 222, "type": "mercadopago"}, "currency_id": "BRL",
+                "transaction_amount": payment.amount, "status": "approved",
+                "external_reference": reference, "metadata": {"payment_id": local_id}}}
+            user.return_value.get.return_value = {"status": 200, "response": {"id": 111, "tags": ["test_user"]}}
+            order.return_value.get.return_value = {"status": 200, "response": {
+                "id": 222, "preference_id": "test-preference", "application_id": 333,
+                "collector": {"id": 111}, "payments": [{"id": 123}], "external_reference": reference}}
+            pref.return_value.get.return_value = {"status": 200, "response": {
+                "id": "test-preference", "client_id": 333, "collector_id": 111,
+                "external_reference": reference, "metadata": {"payment_id": local_id}}}
+            assert client.post("/payments/mercado-pago/webhook?data.id=123").status_code == 401
+            sdk.assert_not_called()
+            for _ in range(2):
+                assert client.post("/payments/mercado-pago/webhook?data.id=123", headers=signed(provider),
+                    json={"live_mode": False, "application_id": "forged"}).status_code == 200
+                sub = db.records[Subscription]
+                if _ == 0:
+                    dates = sub.starts_at, sub.expires_at
+                assert dates == (sub.starts_at, sub.expires_at)
+            assert payment.payment_metadata["payment_environment"] == "test"
+            assert payment.status == PaymentStatus.APPROVED
+            assert sub.status == SubscriptionStatus.ACTIVE
 
 
 def test_plans_public_database_prices(db: MagicMock, provider: MercadoPagoPaymentProvider) -> None:

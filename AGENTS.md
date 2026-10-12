@@ -32,6 +32,14 @@ Estas instruções se aplicam a todo este repositório e às futuras implementa�
 
 ## Arquitetura obrigatória
 
+- Checkout Pro com vendedor de teste comprovado pode retornar live_mode=true.
+  A exceção exige ENVIRONMENT=testing, MERCADO_PAGO_ENVIRONMENT=test, opt-in
+  MERCADO_PAGO_CHECKOUT_TEST_SELLER e aplicação esperada confirmada. Consultar
+  conta, pedido comercial e preferência; validar vendedor, aplicação, inclusão
+  do pagamento no pedido e preferência gravada localmente pela API. Ausência
+  ou divergência bloqueia. Pix mantém a regra estrita. Pagamentos de teste
+  nunca ativam licença em production nem podem ser reclassificados como reais.
+
 - Complemento autorizado da etapa 18: `GET /plans` público, `POST /payments/checkout`
   e `GET /payments/{payment_id}` autenticados. Checkout Pro via Preferences no provider,
   preço do banco, intenção local antes da rede e referências geradas no servidor.

@@ -688,6 +688,14 @@ As regras permanentes estão em [AGENTS.md](AGENTS.md). A etapa 18 autoriza inte
 
 ### Diagnóstico temporário de Webhooks
 
+Checkout Pro com vendedor de teste comprovado pode retornar live_mode=true.
+A exceção exige ENVIRONMENT=testing, MERCADO_PAGO_ENVIRONMENT=test,
+MERCADO_PAGO_CHECKOUT_TEST_SELLER=true e MERCADO_PAGO_APPLICATION_ID confirmado.
+Consulte [as evidências obrigatórias](docs/checkout_pro.md). Mantém HMAC e
+conciliação atômica; falta de vendedor, aplicação, pedido ou preferência local
+bloqueia. Não habilitar no serviço/banco usados por clientes reais. O 401 de
+entrega automática continua exigindo diagnóstico da assinatura daquela entrega.
+
 `MERCADO_PAGO_WEBHOOK_DIAGNOSTICS=false` por padrão. Ative com `true` para registrar
 identificadores numéricos, request-id UUID, timestamp, formato de v1, SDK, deployment
 e resultados HMAC/conciliação. Valores fora dos formatos permitidos são redigidos.

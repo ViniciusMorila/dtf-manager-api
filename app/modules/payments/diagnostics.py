@@ -114,6 +114,7 @@ def _emit_webhook_diagnostic(*, enabled: bool, stage: str, result: str,
     ts = timestamps[0] if len(timestamps) == 1 else ""
     digest = hashes[0] if len(hashes) == 1 else ""
     safe_results = {"valid", "invalid", "provider_not_found", "provider_response_invalid",
+                    "checkout_evidence_missing", "checkout_evidence_mismatch", "seller_mismatch",
                     "environment_mismatch", "local_payment_not_found", "reconciliation_conflict",
                     "provider_unavailable", "persistence_or_activation_failed", "missing_references"}
     event = {

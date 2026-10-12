@@ -18,9 +18,25 @@ retorna 503 antes de criar intenção local. Origem inválida impede a inicializ
 A preferência recebe `notification_url = API_PUBLIC_BASE_URL + /payments/mercado-pago/webhook`.
 
 Manter `DATABASE_URL`, os secrets JWT e as três variáveis Mercado Pago existentes.
-Para teste, `MERCADO_PAGO_ENVIRONMENT=test` exige pagamento consultado com
-`live_mode=false`. Essa variável não transforma uma credencial real em credencial
-de teste: use a credencial apropriada da conta vendedora de teste da aplicação.
+Para teste sandbox, `MERCADO_PAGO_ENVIRONMENT=test` exige `live_mode=false`.
+O fluxo de Checkout Pro com credenciais de produção de vendedor de teste pode
+retornar `live_mode=true`. A exceção exige `ENVIRONMENT=testing`,
+`MERCADO_PAGO_CHECKOUT_TEST_SELLER=true` e `MERCADO_PAGO_APPLICATION_ID` confirmado
+no painel. Não habilitar essa configuração no serviço/banco usados por clientes reais.
+Ela não transforma credenciais reais em credenciais de teste.
+
+A API consulta `/users/me`, pedido comercial e preferência. Exige vendedor de
+teste correspondente ao collector do pagamento, pedido e preferência; pagamento
+listado no pedido; application_id do pedido e client_id da preferência iguais à
+aplicação configurada; referências e metadata consistentes. Em transação, exige
+que preference_id corresponda ao checkout local ready, além dos checks de preço,
+moeda, usuário e assinatura. Qualquer ausência ou divergência bloqueia.
+Se application_id do pagamento estiver ausente, a prova vem do pedido e da
+preferência consultados; se esses também omitirem os campos, permanece bloqueado.
+O ambiente é persistido nos metadados e não pode ser reclassificado. Pagamentos
+de teste não ativam licença em `ENVIRONMENT=production`; conta de teste é recusada
+por consultas no fluxo `MERCADO_PAGO_ENVIRONMENT=production` mesmo com live_mode=true.
+Pix direto não recebe essa exceção.
 Não registrar credenciais em comandos versionados ou compartilhar tokens de sessão.
 
 No painel Mercado Pago, configurar Webhooks de **Pagamentos**, no ambiente de teste,

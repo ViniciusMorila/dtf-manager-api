@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings
 from app.db.base import load_models
 from app.modules.payments.contracts import (
     CheckoutCreate,
@@ -108,6 +109,7 @@ class PaymentService:
                 payment = Payment(id=payment_id, user_id=user_id, subscription_id=subscription_id,
                     provider=provider.name, amount=plan.price, currency="BRL", status=PaymentStatus.PENDING,
                     payment_metadata={"checkout_state": "creating", "description": description,
+                                      "payment_environment": Settings().mercado_pago_environment,
                                       "checkout_expires_at": expiration_at.isoformat(),
                                       "notification_url": notification_url})
                 self._session.add(payment)
@@ -240,6 +242,19 @@ class PaymentService:
                     .with_for_update().execution_options(populate_existing=True))
                 if payment is None:
                     raise PaymentNotFound("Pagamento não encontrado.")
+                if confirmation is not None:
+                    settings = Settings()
+                    metadata = payment.payment_metadata or {}
+                    if (confirmation.payment_environment is not None
+                            and metadata.get("payment_environment") not in (None, confirmation.payment_environment)):
+                        raise PaymentConflict("Ambiente diverge da intenção de pagamento.")
+                    if confirmation.payment_environment == "test" and settings.environment == "production":
+                        raise PaymentConflict("Pagamento de teste não autoriza licença em produção.")
+                    if confirmation.verified_preference_id is not None and (
+                            confirmation.payment_environment != "test"
+                            or metadata.get("checkout_state") != "ready"
+                            or metadata.get("preference_id") != confirmation.verified_preference_id):
+                        raise PaymentConflict("Preferência não corresponde ao checkout local.")
                 if confirmation is not None and (payment.provider != provider or payment.amount != confirmation.amount
                                                   or payment.currency != confirmation.currency):
                     raise PaymentConflict("Confirmação incompatível com o pagamento.")
@@ -258,6 +273,9 @@ class PaymentService:
                     if payment.provider_payment_id not in (None, data.provider_payment_id):
                         raise PaymentConflict("O identificador externo não pode ser substituído.")
                     payment.provider_payment_id = data.provider_payment_id
+                if confirmation is not None and confirmation.payment_environment is not None:
+                    payment.payment_metadata = {**(payment.payment_metadata or {}),
+                                                "payment_environment": confirmation.payment_environment}
                 allowed: dict[PaymentStatus, set[PaymentStatus]] = {
                     PaymentStatus.PENDING: {PaymentStatus.APPROVED, PaymentStatus.REJECTED, PaymentStatus.CANCELLED},
                     PaymentStatus.APPROVED: {PaymentStatus.REFUNDED},

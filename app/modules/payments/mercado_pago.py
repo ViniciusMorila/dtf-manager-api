@@ -22,7 +22,10 @@ from app.modules.payments.contracts import (
     PaymentCreate,
     ProviderPayment,
 )
-from app.modules.payments.diagnostics import log_checkout_failure, log_webhook_diagnostic
+from app.modules.payments.diagnostics import (
+    log_checkout_failure,
+    log_webhook_diagnostic,
+)
 from app.modules.payments.models import PaymentStatus
 from app.modules.payments.provider import PaymentProvider
 
@@ -149,6 +152,8 @@ class MercadoPagoPaymentProvider(PaymentProvider):
             result: Any = self._sdk.payment().create(payload, options)
         except (MercadoPagoError, requests.RequestException, TimeoutError, ValueError, TypeError):
             raise ProviderUnavailable("Falha na API de pagamentos.") from None
+        if self._settings.mercado_pago_environment == "production":
+            self._verify_production_seller(result)
         return self._parse(result)
 
     def create_checkout(self, payment: CheckoutCreate) -> CheckoutPreference:
@@ -199,10 +204,93 @@ class MercadoPagoPaymentProvider(PaymentProvider):
             result: Any = self._sdk.payment().get(provider_payment_id)
         except (MercadoPagoError, requests.RequestException, TimeoutError, ValueError, TypeError):
             raise ProviderUnavailable("Falha na API de pagamentos.") from None
-        payment: ProviderPayment = self._parse(result)
+        verified_preference: str | None = None
+        if isinstance(result, dict) and result.get("status") == 200 and isinstance(result.get("response"), dict):
+            data = result["response"]
+            if self._settings.mercado_pago_environment == "production":
+                self._verify_production_seller(result)
+            elif data.get("live_mode") is True:
+                verified_preference = self._verify_test_checkout(data)
+        payment: ProviderPayment = self._parse(result, verified_preference=verified_preference)
         if payment.provider_payment_id != provider_payment_id:
             raise ProviderInvalidPayment("Identificador divergente.")
         return payment
+
+    @staticmethod
+    def _response_body(result: Any) -> dict[str, Any]:
+        if (not isinstance(result, dict) or type(result.get("status")) is not int
+                or not 200 <= result["status"] < 300 or not isinstance(result.get("response"), dict)):
+            raise ProviderInvalidPayment(reason="checkout_evidence_missing")
+        return result["response"]
+
+    @staticmethod
+    def _numeric_id(value: Any) -> str | None:
+        if type(value) not in (str, int):
+            return None
+        text = str(value)
+        return text if text.isascii() and text.isdigit() and len(text) <= 64 else None
+
+    def _verify_seller(self, data: dict[str, Any], account: dict[str, Any], *, test: bool) -> None:
+        seller = self._numeric_id(data.get("collector_id"))
+        tags = account.get("tags")
+        if (seller is None or seller != self._numeric_id(account.get("id"))
+                or not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags)):
+            raise ProviderInvalidPayment(reason="seller_mismatch")
+        if ("test_user" in tags) is not test:
+            raise ProviderInvalidPayment(reason="environment_mismatch")
+
+    def _verify_production_seller(self, result: Any) -> None:
+        data = self._response_body(result)
+        try:
+            account = self._response_body(self._sdk.user().get())
+            self._verify_seller(data, account, test=False)
+        except (MercadoPagoError, requests.RequestException, TimeoutError, ValueError, TypeError):
+            raise ProviderUnavailable("Vendedor indisponível.") from None
+
+    def _verify_test_checkout(self, data: dict[str, Any]) -> str:
+        if not self._settings.mercado_pago_checkout_test_seller:
+            raise ProviderInvalidPayment(reason="environment_mismatch")
+        if (self._settings.mercado_pago_application_id is None
+                or self._settings.environment != "testing"):
+            raise ProviderInvalidPayment(reason="checkout_evidence_missing")
+        try:
+            account = self._response_body(self._sdk.user().get())
+            self._verify_seller(data, account, test=True)
+            order_info = data.get("order")
+            if not isinstance(order_info, dict) or order_info.get("type") != "mercadopago":
+                raise ProviderInvalidPayment(reason="checkout_evidence_missing")
+            order_id = self._numeric_id(order_info.get("id"))
+            if order_id is None:
+                raise ProviderInvalidPayment(reason="checkout_evidence_missing")
+            order = self._response_body(self._sdk.merchant_order().get(order_id))
+            preference_id = order.get("preference_id")
+            if (self._numeric_id(order.get("id")) != order_id
+                    or not isinstance(preference_id, str) or not preference_id
+                    or len(preference_id) > 255
+                    or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in preference_id)):
+                raise ProviderInvalidPayment(reason="checkout_evidence_missing")
+            preference = self._response_body(self._sdk.preference().get(preference_id))
+            payments = order.get("payments")
+            if (not isinstance(payments, list) or not any(isinstance(p, dict)
+                    and self._numeric_id(p.get("id")) == self._numeric_id(data.get("id")) for p in payments)
+                    or preference.get("id") != preference_id
+                    or self._numeric_id(preference.get("collector_id")) != self._numeric_id(account.get("id"))
+                    or not isinstance(order.get("collector"), dict)
+                    or self._numeric_id(order["collector"].get("id")) != self._numeric_id(account.get("id"))
+                    or self._numeric_id(preference.get("client_id")) != self._settings.mercado_pago_application_id
+                    or self._numeric_id(order.get("application_id")) != self._settings.mercado_pago_application_id
+                    or order.get("external_reference") != data.get("external_reference")
+                    or preference.get("external_reference") != data.get("external_reference")
+                    or not isinstance(preference.get("metadata"), dict)
+                    or preference["metadata"].get("payment_id") != data.get("metadata", {}).get("payment_id")):
+                raise ProviderInvalidPayment(reason="checkout_evidence_mismatch")
+            if data.get("application_id") is not None and self._numeric_id(data["application_id"]) != self._settings.mercado_pago_application_id:
+                raise ProviderInvalidPayment(reason="checkout_evidence_mismatch")
+            return preference_id
+        except (MercadoPagoError, requests.RequestException, TimeoutError):
+            raise ProviderUnavailable("Evidências do checkout indisponíveis.") from None
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise ProviderInvalidPayment(reason="checkout_evidence_missing") from None
 
     def diagnose_payment_environment(self, expected_application_id: str) -> dict[str, Any]:
         """Read-only, allowlisted diagnostics for the incident payment only."""
@@ -232,6 +320,7 @@ class MercadoPagoPaymentProvider(PaymentProvider):
             "seller_matches_token_account": None, "token_account_is_test_user": None,
             "payment_application_matches_expected": None,
             "token_application_verified": False,
+            "checkout_evidence_verified": False,
         }
         try:
             # Same SDK GET and parser as fetch_payment; never reconcile or write to DB.
@@ -246,13 +335,17 @@ class MercadoPagoPaymentProvider(PaymentProvider):
             application = identifier(payment.get("application_id"))
             event["payment_application_matches_expected"] = application == expected if application else None
             try:
-                self._parse(result)
+                verified = None
+                if live is True and self._settings.mercado_pago_environment == "test" and self._settings.mercado_pago_checkout_test_seller:
+                    verified = self._verify_test_checkout(payment)
+                    event["checkout_evidence_verified"] = True
+                self._parse(result, verified_preference=verified)
                 event["validation_result"] = "valid"
             except ProviderInvalidPayment as exc:
                 event["validation_result"] = exc.reason
             except ProviderUnavailable:
                 event["validation_result"] = "provider_unavailable"
-        except Exception:
+        except Exception:  # noqa: BLE001 -- read-only diagnostics omit sensitive exception text
             payment = {}
         try:
             account = body(self._sdk.user().get())
@@ -264,11 +357,11 @@ class MercadoPagoPaymentProvider(PaymentProvider):
             tags = account.get("tags")
             if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
                 event["token_account_is_test_user"] = "test_user" in tags
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 -- read-only diagnostics omit sensitive exception text
+            event["token_account_fetch_ok"] = False
         return event
 
-    def _parse(self, result: Any) -> ProviderPayment:
+    def _parse(self, result: Any, *, verified_preference: str | None = None) -> ProviderPayment:
         if not isinstance(result, dict) or not isinstance(result.get("status"), int):
             raise ProviderInvalidPayment("Resposta de pagamento inválida.")
         if result["status"] == 404:
@@ -282,13 +375,17 @@ class MercadoPagoPaymentProvider(PaymentProvider):
                     or data["currency_id"] != "BRL" or data["external_reference"] is None
                     or data["metadata"]["payment_id"] is None):
                 raise ValueError("Identidade ou moeda inválida")
-            if data["live_mode"] is not (self._settings.mercado_pago_environment == "production"):
+            if data["live_mode"] is not (self._settings.mercado_pago_environment == "production") and not (
+                    self._settings.mercado_pago_environment == "test" and data["live_mode"] is True
+                    and verified_preference is not None):
                 raise ProviderInvalidPayment("Resposta de pagamento inválida.", reason="environment_mismatch")
             amount: Any = data["transaction_amount"]
             if isinstance(amount, (float, bool)):
                 raise TypeError("Valor sem precisão decimal")
             return ProviderPayment(provider_payment_id=str(data["id"]), amount=Decimal(amount),
                 currency=data["currency_id"], status=self.STATUSES[data["status"]],
-                external_reference=data["external_reference"], payment_id=data["metadata"]["payment_id"])
+                external_reference=data["external_reference"], payment_id=data["metadata"]["payment_id"],
+                payment_environment=self._settings.mercado_pago_environment,
+                verified_preference_id=verified_preference)
         except (KeyError, TypeError, ValueError, ArithmeticError):
             raise ProviderInvalidPayment("Resposta de pagamento inválida.") from None

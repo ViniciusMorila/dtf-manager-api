@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -43,6 +43,8 @@ class ProviderPayment(BaseModel):
     status: PaymentStatus
     external_reference: UUID | None = None
     payment_id: UUID | None = None
+    payment_environment: Literal["test", "production"] | None = None
+    verified_preference_id: str | None = None
 
 
 class PaymentRecord(BaseModel):

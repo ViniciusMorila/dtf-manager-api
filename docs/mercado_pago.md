@@ -10,7 +10,8 @@ Configurar por ambiente ou `.env` local, nunca versionado:
 
 - `MERCADO_PAGO_ACCESS_TOKEN`: credencial do servidor para a aplicação Mercado Pago.
 - `MERCADO_PAGO_WEBHOOK_SECRET`: assinatura secreta obtida no painel de Webhooks.
-- `MERCADO_PAGO_ENVIRONMENT`: `test` ou `production`; `live_mode` da resposta deve corresponder.
+- `MERCADO_PAGO_ENVIRONMENT`: `test` ou `production`; validação estrita de live_mode,
+  com exceção comprovada de Checkout Pro/vendedor de teste descrita em checkout_pro.md.
 
 Configuração ausente/incompleta bloqueia operações de pagamento. Em production,
 configuração parcial ou fictícia impede startup. As três variáveis ausentes

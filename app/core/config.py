@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None
     mercado_pago_webhook_diagnostics: bool = False
     mercado_pago_webhook_capture: bool = False
+    mercado_pago_checkout_test_seller: bool = False
+    mercado_pago_application_id: str | None = Field(default=None, pattern=r"^[0-9]{1,64}$")
     mercado_pago_access_token: SecretStr | None = None
     mercado_pago_webhook_secret: SecretStr | None = None
     mercado_pago_environment: Literal["test", "production"] | None = None
@@ -56,6 +58,10 @@ class Settings(BaseSettings):
         """Integração opcional; uso exige configuração completa e não fictícia."""
         if self.mercado_pago_environment is None:
             raise ValueError("MERCADO_PAGO_ENVIRONMENT obrigatório para pagamentos.")
+        if self.mercado_pago_checkout_test_seller and (
+                self.mercado_pago_environment != "test" or self.environment != "testing"
+                or self.mercado_pago_application_id is None):
+            raise ValueError("Checkout com vendedor de teste exige ENVIRONMENT=testing, ambiente test e application ID.")
         for secret in (self.mercado_pago_access_token, self.mercado_pago_webhook_secret):
             value: str = secret.get_secret_value() if secret else ""
             if (len(value) < 32 or len(set(value)) < 8 or any(c.isspace() for c in value)
