@@ -229,8 +229,8 @@ Como o plano é aplicado:
 - **Licença ainda válida:** a duração do plano é somada à `data_expiracao` atual.
 - **Licença vencida:** a duração conta a partir de agora.
 - **Chave `VITALICIO`:** remove a expiração.
-- **Licença que já é vitalícia:** recusa chaves de outros planos
-  (`LICENCA_JA_VITALICIA`) e mantém a chave disponível.
+- **Licença que já é vitalícia e ativa:** recusa qualquer chave, inclusive outra
+  `VITALICIO` (`LICENCA_JA_VITALICIA`), e a chave continua disponível.
 - **Conta antiga sem licença:** a chave cria a licença vinculada a esta máquina.
 
 **200 OK**
@@ -240,6 +240,17 @@ Como o plano é aplicado:
                "dias_restantes": 37, "vitalicia": false },
   "servidor_agora": "…", "plano_ativado": "MENSAL" }
 ```
+
+**Ordem das validações** (a primeira que falhar define o erro):
+1. Autenticação (Bearer ou e-mail e senha) e rate limit.
+2. Formato da chave: `CHAVE_INVALIDA` (422).
+3. Estado da licença, **sem consultar a chave**: `LICENCA_BLOQUEADA` (403),
+   `ID_MAQUINA_INVALIDO` (422), `MAQUINA_DIFERENTE` (403), `MAQUINA_EM_USO` (409),
+   `LICENCA_JA_VITALICIA` (409).
+4. Chave: `CHAVE_INVALIDA` (422) se for inexistente, já usada ou cancelada.
+
+Como a licença é verificada antes da chave, os erros do passo 3 são idênticos com
+uma chave válida ou inexistente. Nenhuma recusa consome a chave.
 
 **Erros:**
 - `CHAVE_INVALIDA` (422): chave inexistente, já usada, cancelada ou mal formatada.
@@ -337,7 +348,7 @@ outra licença ativa), `VALIDATION_ERROR` (422) e `LICENCA_INDISPONIVEL` (503).
 | `LICENCA_EXPIRADA` | 403 | Licença vencida (status gravado como `EXPIRADA`) |
 | `LICENCA_BLOQUEADA` | 403 | Bloqueada pelo administrador |
 | `LICENCA_NAO_ENCONTRADA` | 404 | Conta sem licença (ou licença inexistente, no admin) |
-| `LICENCA_JA_VITALICIA` | 409 | Chave não vitalícia em licença vitalícia; chave preservada |
+| `LICENCA_JA_VITALICIA` | 409 | Qualquer chave em licença vitalícia ativa; chave preservada |
 | `CHAVE_INVALIDA` | 422 / 409 | Chave inexistente, usada ou cancelada (409 ao cancelar chave não disponível) |
 | `CHAVE_NAO_ENCONTRADA` | 404 | ID de chave inexistente (admin) |
 | `LIMITE_RESETS` | 409 | 3 resets nos últimos 12 meses; inclui `resets_ultimos_12_meses` e `limite` |

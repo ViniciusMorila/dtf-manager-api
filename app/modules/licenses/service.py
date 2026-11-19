@@ -28,6 +28,7 @@ from app.modules.licenses.models import (
 from app.modules.licenses.rules import (
     days_remaining,
     expire_if_due,
+    is_currently_valid,
     plan_end,
     renewed_expiration,
 )
@@ -38,6 +39,7 @@ from app.modules.licenses.schemas.contract import (
 )
 from app.shared.exceptions.license import (
     InvalidActivationKey,
+    LicenseAlreadyLifetime,
     LicenseBlocked,
     LicenseError,
     LicenseExpired,
@@ -194,7 +196,12 @@ def create_trial(session: Session, *, user_id: UUID, phone: str, machine_id: str
 
 def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
                machine_id: str | None) -> AtivarChaveResponse:
-    """Marca a chave como usada e aplica o plano conforme a regra de renovação."""
+    """Marca a chave como usada e aplica o plano conforme a regra de renovação.
+
+    Todas as recusas que dependem só da licença (bloqueio, máquina, vitalícia)
+    acontecem ANTES de consultar a chave: a resposta não revela se ela existe.
+    Só o formato é verificado antes, por não ser segredo.
+    """
     key: str | None = normalize_activation_key(raw_key)
     if key is None:
         raise InvalidActivationKey()
@@ -203,12 +210,6 @@ def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
         with session.begin():
             # Ordem fixa de locks (licença, depois chave) evita deadlock entre ativações.
             license: License | None = lock_license(session, user_id)
-            activation: ActivationKey | None = session.scalar(
-                select(ActivationKey).where(ActivationKey.key_hash == hash_activation_key(key))
-                .with_for_update().execution_options(populate_existing=True),
-            )
-            if activation is None or activation.status != ActivationKeyStatus.DISPONIVEL:
-                raise InvalidActivationKey()
             if license is None:
                 if not is_admin:
                     if machine_id is None:
@@ -216,13 +217,6 @@ def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
                     if session.scalar(select(License.id).where(
                             License.machine_id == machine_id, License.status == LicenseState.ATIVA)) is not None:
                         raise MachineInUse()
-                license = License(
-                    user_id=user_id, plan=activation.plan, status=LicenseState.ATIVA, activated_at=now,
-                    expires_at=plan_end(activation.plan, now), machine_id=None if is_admin else machine_id,
-                    phone=None, reset_count=0, last_reset_at=None,
-                )
-                session.add(license)
-                session.flush()
             else:
                 expire_if_due(license, now)
                 if license.status == LicenseState.BLOQUEADA:
@@ -231,6 +225,23 @@ def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
                     machine_error: LicenseError | None = bind_machine(session, license, machine_id)
                     if machine_error is not None:
                         raise machine_error
+                if license.plan == LicensePlanCode.VITALICIO and is_currently_valid(license, now):
+                    raise LicenseAlreadyLifetime()
+            activation: ActivationKey | None = session.scalar(
+                select(ActivationKey).where(ActivationKey.key_hash == hash_activation_key(key))
+                .with_for_update().execution_options(populate_existing=True),
+            )
+            if activation is None or activation.status != ActivationKeyStatus.DISPONIVEL:
+                raise InvalidActivationKey()
+            if license is None:
+                license = License(
+                    user_id=user_id, plan=activation.plan, status=LicenseState.ATIVA, activated_at=now,
+                    expires_at=plan_end(activation.plan, now), machine_id=None if is_admin else machine_id,
+                    phone=None, reset_count=0, last_reset_at=None,
+                )
+                session.add(license)
+                session.flush()
+            else:
                 license.expires_at = renewed_expiration(license, activation.plan, now)
                 license.plan = activation.plan
                 license.status = LicenseState.ATIVA

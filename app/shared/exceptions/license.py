@@ -57,7 +57,7 @@ class AdminLicenseNotFound(LicenseNotFound):
 
 class LicenseAlreadyLifetime(LicenseError):
     code = "LICENCA_JA_VITALICIA"
-    message = "Sua licença já é vitalícia; esta chave não foi utilizada."
+    message = "Sua licença já é vitalícia; nenhuma chave precisa ser ativada e a chave não foi utilizada."
     status_code = 409
 
 

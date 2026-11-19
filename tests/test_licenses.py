@@ -792,3 +792,33 @@ def test_downgrade_refused_when_license_data_exists(api: Api, db: Session) -> No
 def test_downgrade_allowed_on_empty_license_tables(db: Session) -> None:
     migration = load_migration()
     assert set(migration.ensure_downgrade_allowed(db.connection(), None).values()) == {0}
+
+
+# --- Ordem das validações na ativação (sem oráculo de chave) ---------------------------------
+
+def test_license_state_errors_do_not_reveal_whether_key_is_valid(api: Api, admin: Account) -> None:
+    valid_key: str = new_key(api, admin, "MENSAL")
+    unknown_key: str = "ABCD-EFGH-JKMN-PQRS"
+
+    blocked, _ = api.register()
+    api.login(blocked)
+    api.request("POST", f"/admin/licencas/{api.license_of(blocked).id}/bloquear", token=admin.token)
+    other_machine, _ = api.register()
+    api.login(other_machine)
+    lifetime, _ = api.register()
+    api.login(lifetime)
+    assert api.activate(lifetime, new_key(api, admin, "VITALICIO")).status_code == 200
+
+    cases = (
+        (lambda key: api.activate(blocked, key, with_password=True), "LICENCA_BLOQUEADA"),
+        (lambda key: api.activate(other_machine, key, machine=random_machine()), "MAQUINA_DIFERENTE"),
+        (lambda key: api.activate(lifetime, key), "LICENCA_JA_VITALICIA"),
+    )
+    for attempt, code in cases:
+        with_valid: Response = attempt(valid_key)
+        with_unknown: Response = attempt(unknown_key)
+        assert (with_valid.status_code, with_valid.json()) == (with_unknown.status_code, with_unknown.json()), code
+        assert error_code(with_valid) == code
+    # Nenhuma das tentativas consumiu a chave válida.
+    available = api.request("GET", "/admin/chaves?status=DISPONIVEL&limite=200", token=admin.token).json()["itens"]
+    assert any(item["chave_mascarada"].endswith(valid_key[-4:]) for item in available)
