@@ -723,12 +723,19 @@ cd /app
 /app/.venv/bin/python -m alembic current   # esperado: 0003_licenses (head)
 ```
 
-Para desfazer (remove as tabelas de licença e `users.role`; `users.cpf` só volta
-a obrigatório se nenhuma conta estiver sem CPF):
+Para desfazer: o downgrade remove as tabelas de licença, `users.role` e
+`refresh_tokens.machine_id`, e `users.cpf` só volta a ser obrigatório se nenhuma conta
+estiver sem CPF. **Isso apaga definitivamente** licenças, chaves vendidas e ainda não
+usadas, e o histórico de resets. Se alguma dessas tabelas tiver dados, o downgrade é
+recusado até você confirmar explicitamente, depois de fazer o backup:
 
 ```sh
-/app/.venv/bin/python -m alembic downgrade 0002_plan_price
+pg_dump "$DATABASE_URL" -Fc -f antes_downgrade_licencas.dump
+CONFIRMAR_DOWNGRADE_LICENCAS=apagar-dados-de-licencas \
+  /app/.venv/bin/python -m alembic downgrade 0002_plan_price
 ```
+
+Com as tabelas vazias, o downgrade roda sem a variável.
 
 ### Administrador
 

@@ -760,3 +760,35 @@ def test_paid_license_binding_does_not_record_trial(api: Api, admin: Account, db
     assert api.login(account).status_code == 200
     settle(db)
     assert db.scalar(select(TrialUsage.id).where(TrialUsage.machine_id == account.machine.lower())) is None
+
+
+# --- Migration: downgrade protegido ---------------------------------------------------------
+
+def load_migration() -> Any:
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0003_licenses.py"
+    spec = importlib.util.spec_from_file_location("migration_0003_licenses", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_downgrade_refused_when_license_data_exists(api: Api, db: Session) -> None:
+    migration = load_migration()
+    api.register()
+    settle(db)
+    connection = db.connection()
+    with pytest.raises(migration.DowngradeRefused) as refused:
+        migration.ensure_downgrade_allowed(connection, None)
+    assert "licenses=1" in str(refused.value) and "pg_dump" in str(refused.value)
+    with pytest.raises(migration.DowngradeRefused):
+        migration.ensure_downgrade_allowed(connection, "sim")
+    counts = migration.ensure_downgrade_allowed(connection, migration.DOWNGRADE_CONFIRMATION_VALUE)
+    assert counts["licenses"] == 1 and counts["trial_usages"] == 1
+
+
+def test_downgrade_allowed_on_empty_license_tables(db: Session) -> None:
+    migration = load_migration()
+    assert set(migration.ensure_downgrade_allowed(db.connection(), None).values()) == {0}

@@ -178,6 +178,7 @@ def test_alembic_offline_initial_revision(monkeypatch: pytest.MonkeyPatch, tmp_p
     output.seek(0)
     command.downgrade(config, "0003_licenses:base", sql=True)
     assert "DROP TABLE licenses" in output.getvalue()
+    assert "ATENCAO: este SQL apaga definitivamente" in output.getvalue()
     assert "DROP TYPE license_plan" in output.getvalue()
     assert "DROP COLUMN price" in output.getvalue()
     assert "DROP TYPE payment_status" in output.getvalue()

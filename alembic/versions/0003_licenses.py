@@ -7,6 +7,7 @@ Somente adições: nenhuma linha existente é apagada ou alterada, exceto tornar
 users.cpf opcional (o cadastro de licenças não exige CPF).
 """
 
+import os
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -26,6 +27,27 @@ license_status = postgresql.ENUM("ATIVA", "EXPIRADA", "BLOQUEADA", name="license
 activation_key_status = postgresql.ENUM("DISPONIVEL", "USADA", "CANCELADA",
                                         name="activation_key_status", create_type=False)
 ENUMS: tuple[postgresql.ENUM, ...] = (user_role, license_plan, license_status, activation_key_status)
+LICENSE_TABLES: tuple[str, ...] = ("licenses", "activation_keys", "trial_usages", "license_resets")
+DOWNGRADE_CONFIRMATION_VARIABLE: str = "CONFIRMAR_DOWNGRADE_LICENCAS"
+DOWNGRADE_CONFIRMATION_VALUE: str = "apagar-dados-de-licencas"
+
+
+class DowngradeRefused(RuntimeError):
+    """O downgrade apagaria licenças, chaves vendidas e histórico sem confirmação."""
+
+
+def ensure_downgrade_allowed(bind: sa.engine.Connection, confirmation: str | None) -> dict[str, int]:
+    """Permite o downgrade com as tabelas vazias; com dados, exige a confirmação explícita."""
+    counts: dict[str, int] = {
+        table: bind.execute(sa.text(f"SELECT count(*) FROM {table}")).scalar_one() for table in LICENSE_TABLES
+    }
+    if any(counts.values()) and confirmation != DOWNGRADE_CONFIRMATION_VALUE:
+        summary: str = ", ".join(f"{table}={count}" for table, count in counts.items())
+        raise DowngradeRefused(
+            f"Downgrade recusado: ele apagaria definitivamente dados de licença ({summary}). "
+            f"Faça backup (pg_dump) e repita com {DOWNGRADE_CONFIRMATION_VARIABLE}="
+            f"{DOWNGRADE_CONFIRMATION_VALUE}.")
+    return counts
 
 
 def upgrade() -> None:
@@ -130,7 +152,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove as estruturas de licença. users.cpf só volta a NOT NULL se nenhuma conta estiver sem CPF."""
+    """Remove as estruturas de licença. users.cpf só volta a NOT NULL se nenhuma conta estiver sem CPF.
+
+    Apaga licenças, chaves (inclusive vendidas e não usadas) e histórico de resets.
+    Com dados presentes, exige CONFIRMAR_DOWNGRADE_LICENCAS=apagar-dados-de-licencas.
+    """
+    if op.get_context().as_sql:
+        op.execute("-- ATENCAO: este SQL apaga definitivamente licencas, chaves e historico de resets. "
+                   "Faca backup (pg_dump) antes de aplicar.")
+    else:
+        ensure_downgrade_allowed(op.get_bind(), os.environ.get(DOWNGRADE_CONFIRMATION_VARIABLE))
     op.drop_table("license_resets")
     op.drop_table("trial_usages")
     op.drop_table("activation_keys")
