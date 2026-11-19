@@ -35,6 +35,10 @@ from app.shared.security.jwt import (
     decode_refresh_token,
 )
 from app.shared.security.password import hash_password, verify_password
+from app.shared.security.rate_limit import (
+    ensure_account_not_limited,
+    record_password_failure,
+)
 from app.shared.security.refresh_token import hash_refresh_token
 
 # Uma verificação Argon2 também ocorre para conta ausente ou inativa.
@@ -42,7 +46,12 @@ _DUMMY_PASSWORD_HASH: str = hash_password(secrets.token_urlsafe(32) + "a1")
 
 
 def verify_credentials(session: Session, email: str, password: SecretStr) -> User:
-    """Dentro da transação do chamador; erro genérico sem revelar a existência da conta."""
+    """Dentro da transação do chamador; erro genérico sem revelar a existência da conta.
+
+    Falhas contam por e-mail (login e ativar-chave somados), inclusive para e-mail inexistente,
+    para que a resposta 429 também não revele se a conta existe.
+    """
+    ensure_account_not_limited(email)
     user: User | None = session.scalar(
         select(User).where(func.lower(User.email) == email).with_for_update(read=True),
     )
@@ -50,6 +59,7 @@ def verify_credentials(session: Session, email: str, password: SecretStr) -> Use
     stored_hash: str = user.password_hash if eligible and user is not None else _DUMMY_PASSWORD_HASH
     valid: bool = verify_password(password.get_secret_value(), stored_hash)
     if not eligible or not valid or user is None:
+        record_password_failure(email)
         raise AuthenticationError()
     return user
 

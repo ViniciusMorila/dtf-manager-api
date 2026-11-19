@@ -34,11 +34,22 @@ class Settings(BaseSettings):
     environment: Literal["development", "testing", "staging", "production"] = "development"
     host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(default=8000, ge=1, le=65535)
-    # Rate limit de cadastro, login e ativação de chave (por IP, por rota).
+    # Rate limit de cadastro, login e ativação de chave.
     rate_limit_enabled: bool = True
+    # Login e ativar-chave: por IP e por rota.
     rate_limit_requests: int = Field(default=10, gt=0)
     rate_limit_window_seconds: int = Field(default=60, gt=0)
-    rate_limit_trust_proxy: bool = True
+    # Cadastro: mais restrito, por IP e por e-mail.
+    rate_limit_register_requests: int = Field(default=5, gt=0)
+    rate_limit_register_email_requests: int = Field(default=3, gt=0)
+    rate_limit_register_window_seconds: int = Field(default=3600, gt=0)
+    # Senhas erradas por conta (login e ativar-chave com e-mail/senha somados), de qualquer IP.
+    rate_limit_account_requests: int = Field(default=10, gt=0)
+    rate_limit_account_window_seconds: int = Field(default=900, gt=0)
+    # Só ligue depois de conferir nos logs que o proxy adiciona o IP real ao final de X-Forwarded-For.
+    rate_limit_trust_proxy: bool = False
+    # Diagnóstico temporário: registra X-Forwarded-For e o IP escolhido (contém IPs; desligue depois).
+    rate_limit_diagnostics: bool = False
     # Usadas somente por scripts/seed_admin.py; nunca lidas pelas rotas.
     admin_email: str | None = None
     admin_senha: SecretStr | None = None

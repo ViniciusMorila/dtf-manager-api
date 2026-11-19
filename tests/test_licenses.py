@@ -585,3 +585,49 @@ def test_concurrent_trials_on_same_machine_only_one_succeeds(committing: list[st
     results = run_concurrently(*(lambda d=d: register(d) for d in attempts))
     assert sum(not isinstance(item, Exception) for item in results) == 1
     assert sum(isinstance(item, TrialAlreadyUsed) for item in results) == 2
+
+
+# --- Rate limit por conta e por e-mail ------------------------------------------------------
+
+@pytest.fixture
+def account_limits(monkeypatch: pytest.MonkeyPatch, environment: None) -> None:
+    """Limite por IP alto para isolar os limites por conta e por e-mail."""
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_REQUESTS", "1000")
+    monkeypatch.setenv("RATE_LIMIT_REGISTER_REQUESTS", "1000")
+    monkeypatch.setenv("RATE_LIMIT_ACCOUNT_REQUESTS", "3")
+    monkeypatch.setenv("RATE_LIMIT_REGISTER_EMAIL_REQUESTS", "2")
+
+
+def test_password_failures_are_limited_per_account_across_routes(account_limits: None, api: Api) -> None:
+    account, _ = api.register()
+    real_password: str = account.password
+    account.password = "senha-errada-1"
+    assert api.login(account).status_code == 401
+    assert api.activate(account, "ABCD-EFGH-JKMN-PQRS", with_password=True).status_code == 401
+    assert api.login(account).status_code == 401
+    account.password = real_password
+    blocked: Response = api.login(account)
+    assert blocked.status_code == 429 and error_code(blocked) == "MUITAS_TENTATIVAS"
+    assert error_code(api.activate(account, "ABCD-EFGH-JKMN-PQRS", with_password=True)) == "MUITAS_TENTATIVAS"
+    other, _ = api.register()
+    assert api.login(other).status_code == 200
+
+
+def test_unknown_email_is_limited_like_existing_one(account_limits: None, api: Api) -> None:
+    ghost = Account(email=f"{uuid4().hex}@example.com", password="qualquer-1", phone="", machine=random_machine())
+    assert [api.login(ghost).status_code for _ in range(4)] == [401, 401, 401, 429]
+
+
+def test_registration_is_limited_per_email(account_limits: None, api: Api) -> None:
+    email: str = f"{uuid4().hex}@example.com"
+
+    def attempt() -> Response:
+        return api.request("POST", "/auth/register", json={
+            "nome": "Cliente", "telefone": random_phone(), "email": email.upper(),
+            "senha": secrets.token_urlsafe(12) + "a1", "id_maquina": random_machine()})
+
+    assert attempt().status_code == 201
+    assert error_code(attempt()) == "EMAIL_ALREADY_EXISTS"
+    blocked: Response = attempt()
+    assert blocked.status_code == 429 and error_code(blocked) == "MUITAS_TENTATIVAS"

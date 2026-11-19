@@ -323,20 +323,38 @@ outra licença ativa), `VALIDATION_ERROR` (422) e `LICENCA_INDISPONIVEL` (503).
 
 ## Rate limit
 
-Cadastro, login e ativação de chave aceitam `RATE_LIMIT_REQUESTS` tentativas
-(padrão 10) por IP a cada `RATE_LIMIT_WINDOW_SECONDS` (padrão 60), contadas
-separadamente por rota. O limite vale também para requisições inválidas. O IP
-vem do último salto de `X-Forwarded-For`, que é adicionado pelo proxy do
-Railway. A contagem fica na memória do processo e zera ao reiniciar a API.
+Ao estourar qualquer limite, a resposta é `429` com o código `MUITAS_TENTATIVAS` e
+o cabeçalho `Retry-After` (em segundos). O app deve mostrar a mensagem e aguardar.
+
+| Limite | Padrão | Chave da contagem |
+| --- | --- | --- |
+| Login e ativar-chave | 10 por minuto, por rota | IP |
+| Cadastro | 5 por hora | IP |
+| Cadastro | 3 por hora | E-mail (de qualquer IP) |
+| Senha errada | 10 a cada 15 minutos | E-mail, somando login e ativar-chave com senha, de qualquer IP |
+
+- Os limites por IP valem também para requisições inválidas.
+- O limite de senha errada conta só as falhas. Atingido, ele recusa até a senha
+  correta, até a janela passar, e vale também para e-mails inexistentes, para não
+  revelar se a conta existe. Efeito colateral: alguém que erre a senha de uma conta
+  10 vezes a bloqueia por 15 minutos.
+- IPv6 é agrupado por bloco /64.
+- A contagem fica na memória do processo e zera quando a API reinicia.
 
 ## Variáveis de ambiente novas
 
 | Variável | Padrão | Uso |
 | --- | --- | --- |
 | `RATE_LIMIT_ENABLED` | `true` | Liga/desliga o rate limit |
-| `RATE_LIMIT_REQUESTS` | `10` | Tentativas por janela, por IP e por rota |
-| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Tamanho da janela, em segundos |
-| `RATE_LIMIT_TRUST_PROXY` | `true` | Usa o último salto de `X-Forwarded-For` como IP (Railway). Use `false` sem proxy. |
+| `RATE_LIMIT_REQUESTS` | `10` | Login e ativar-chave: tentativas por janela, por IP e por rota |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Janela de login e ativar-chave, em segundos |
+| `RATE_LIMIT_REGISTER_REQUESTS` | `5` | Cadastros por IP na janela de cadastro |
+| `RATE_LIMIT_REGISTER_EMAIL_REQUESTS` | `3` | Cadastros por e-mail na janela de cadastro |
+| `RATE_LIMIT_REGISTER_WINDOW_SECONDS` | `3600` | Janela do cadastro, em segundos |
+| `RATE_LIMIT_ACCOUNT_REQUESTS` | `10` | Senhas erradas por e-mail antes de bloquear |
+| `RATE_LIMIT_ACCOUNT_WINDOW_SECONDS` | `900` | Janela das senhas erradas, em segundos |
+| `RATE_LIMIT_TRUST_PROXY` | `false` | Usa o último valor de `X-Forwarded-For` como IP. Ligue só depois de conferir o proxy (veja o README) |
+| `RATE_LIMIT_DIAGNOSTICS` | `false` | Registra temporariamente `X-Forwarded-For` e o IP escolhido nos logs (contém IPs) |
 | `ADMIN_EMAIL` | — | Somente para `scripts/seed_admin.py` |
 | `ADMIN_SENHA` | — | Somente para `scripts/seed_admin.py`; não é lida pelas rotas |
 | `ADMIN_NOME` | `Administrador` | Nome do administrador ao criar a conta |

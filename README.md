@@ -641,9 +641,53 @@ sempre cria `USER`.
   bloqueiam a linha da licença.
 - **Expiração:** é verificada a cada login e a cada `GET /licencas/status` com o relógio
   do servidor, e gravada como `EXPIRADA` antes da recusa.
-- **Rate limit:** em memória, por IP e por rota, em cadastro, login e ativação de chave.
-  Como o Railway roda um único processo Uvicorn, a contagem é exata. Com várias réplicas,
-  cada uma conta separadamente.
+- **Rate limit:** em memória. Login e ativar-chave são limitados por IP. O cadastro é
+  mais restrito, por IP e por e-mail. Senhas erradas são contadas por e-mail, somando
+  as duas rotas que verificam senha. IPv6 é agrupado por /64. Os valores estão em
+  `docs/API_LICENCAS.md`. Com um único processo Uvicorn, a contagem é exata; com várias
+  réplicas, cada uma conta separadamente.
+
+### Conferir o proxy antes de ligar `RATE_LIMIT_TRUST_PROXY`
+
+Com `RATE_LIMIT_TRUST_PROXY=false` (o padrão), a API usa o IP da conexão TCP. Atrás
+do proxy do Railway, esse é o IP do proxy, e **todos os clientes passam a dividir o
+mesmo limite**: 10 logins por minuto e 5 cadastros por hora, no total. Faça a
+conferência logo após o deploy, antes de liberar o app para os clientes.
+
+1. Em **Variables**, defina `RATE_LIMIT_DIAGNOSTICS=true` e deixe
+   `RATE_LIMIT_TRUST_PROXY=false`. A Railway faz o redeploy sozinha.
+2. Descubra o seu IP público, por exemplo abrindo `https://ifconfig.me`. Se a sua rede
+   usa IPv6, compare pelo bloco /64.
+3. Envie duas requisições, uma sem e outra com um cabeçalho falso (as respostas
+   401 ou 422 são esperadas):
+
+   ```sh
+   curl -s -X POST https://SEU-DOMINIO/auth/login -H "Content-Type: application/json" \
+        -d '{"email":"diagnostico@example.com","password":"x","id_maquina":"diagnostico-01"}'
+   curl -s -X POST https://SEU-DOMINIO/auth/login -H "Content-Type: application/json" \
+        -H "X-Forwarded-For: 203.0.113.99" \
+        -d '{"email":"diagnostico@example.com","password":"x","id_maquina":"diagnostico-01"}'
+   ```
+
+4. Em **Deployments → View logs** (Deploy Logs), filtre por `rate_limit_client_ip`.
+   Cada requisição gera uma linha como:
+
+   ```text
+   event=rate_limit_client_ip path=/auth/login xff_header_lines=1 xff_values=['203.0.113.99', '177.10.20.30'] tcp_client=100.64.0.2 trust_proxy=False bucket=100.64.0.2
+   ```
+
+5. Como interpretar:
+   - **Pode ligar:** se, na primeira requisição, `xff_values` termina com o seu IP
+     público e, na segunda, `203.0.113.99` aparece **antes** do seu IP, que continua
+     sendo o último valor. Nesse caso, defina `RATE_LIMIT_TRUST_PROXY=true`.
+     `xff_header_lines=2` também serve: a API junta todas as linhas.
+   - **Não ligue e me avise:** se o último valor não for o seu IP (por exemplo, um
+     endereço interno `10.x`, `100.64.x` ou `172.16-31.x`), se `203.0.113.99` for o
+     último ou o único valor, ou se `xff_values` vier vazio. Nesses casos, o IP real
+     está em outra posição ou em outro cabeçalho, e o código precisa ser ajustado.
+6. Depois de ligar, repita a segunda requisição e confira `trust_proxy=True` e
+   `bucket=<seu IP>`. Em seguida, volte `RATE_LIMIT_DIAGNOSTICS=false`: esse
+   diagnóstico grava IPs, que são dados pessoais.
 
 ### Migrations no Railway
 

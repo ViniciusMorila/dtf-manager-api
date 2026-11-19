@@ -28,7 +28,11 @@ from app.shared.security.activation_key import (
     hash_activation_key,
     normalize_activation_key,
 )
-from app.shared.security.rate_limit import RateLimiter
+from app.shared.security.rate_limit import (
+    INVALID_ADDRESS_BUCKET,
+    RateLimiter,
+    address_bucket,
+)
 from app.shared.utils.calendar import add_calendar_months
 from app.shared.utils.machine import normalize_machine_id
 from app.shared.utils.phone import normalize_phone
@@ -159,24 +163,84 @@ def isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 def test_rate_limit_applies_before_validation(isolated: None, monkeypatch: pytest.MonkeyPatch,
                                               path: str, body: dict[str, str]) -> None:
     monkeypatch.setenv("RATE_LIMIT_REQUESTS", "3")
-    statuses: list[int] = [call("POST", path, json=body).status_code for _ in range(4)]
-    assert statuses[:3] == [422, 422, 422]
+    monkeypatch.setenv("RATE_LIMIT_REGISTER_REQUESTS", "3")
+    statuses: list[int] = [call("POST", path, json=body).status_code for _ in range(3)]
+    assert statuses == [422, 422, 422]
     blocked: Response = call("POST", path, json=body)
     assert blocked.status_code == 429
     assert blocked.json()["error"]["code"] == "MUITAS_TENTATIVAS"
     assert int(blocked.headers["retry-after"]) >= 1
 
 
-def test_rate_limit_uses_last_forwarded_hop(isolated: None, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_registration_ip_limit_is_stricter_and_longer(isolated: None) -> None:
+    body: dict[str, str] = {"email": "invalido"}
+    assert [call("POST", "/auth/register", json=body).status_code for _ in range(5)] == [422] * 5
+    blocked: Response = call("POST", "/auth/register", json=body)
+    assert blocked.status_code == 429 and int(blocked.headers["retry-after"]) > 3000
+    assert call("POST", "/auth/login", json={"email": "invalido", "password": "x"}).status_code == 422
+
+
+def test_forwarded_header_ignored_by_default(isolated: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sem RATE_LIMIT_TRUST_PROXY o cliente não escolhe o próprio IP."""
     monkeypatch.setenv("RATE_LIMIT_REQUESTS", "2")
     body: dict[str, str] = {"email": "invalido", "password": "x"}
-    for _ in range(2):
-        call("POST", "/auth/login", json=body, headers={"X-Forwarded-For": "9.9.9.9, 10.0.0.1"})
-    # Trocar o primeiro valor (controlado pelo cliente) não escapa do limite.
-    spoofed: Response = call("POST", "/auth/login", json=body, headers={"X-Forwarded-For": "8.8.8.8, 10.0.0.1"})
+    statuses = [call("POST", "/auth/login", json=body, headers={"X-Forwarded-For": f"9.9.9.{index}"}).status_code
+                for index in range(3)]
+    assert statuses == [422, 422, 429]
+
+
+def test_trusted_proxy_uses_last_value_of_all_header_lines(isolated: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RATE_LIMIT_TRUST_PROXY", "true")
+    monkeypatch.setenv("RATE_LIMIT_REQUESTS", "2")
+    body: dict[str, str] = {"email": "invalido", "password": "x"}
+    for index in range(2):
+        call("POST", "/auth/login", json=body, headers={"X-Forwarded-For": f"9.9.9.{index}, 200.1.2.3"})
+    # Trocar o valor controlado pelo cliente não escapa do limite, nem com linha separada do cabeçalho.
+    spoofed: Response = call("POST", "/auth/login", json=body, headers={"X-Forwarded-For": "8.8.8.8, 200.1.2.3"})
     assert spoofed.status_code == 429
-    other: Response = call("POST", "/auth/login", json=body, headers={"X-Forwarded-For": "8.8.8.8, 10.0.0.2"})
+    two_lines: Response = call("POST", "/auth/login", json=body,
+                               headers=[("X-Forwarded-For", "7.7.7.7"), ("X-Forwarded-For", "200.1.2.3")])
+    assert two_lines.status_code == 429
+    other: Response = call("POST", "/auth/login", json=body, headers={"X-Forwarded-For": "8.8.8.8, 200.1.2.4"})
     assert other.status_code == 422
+
+
+@pytest.mark.parametrize(("address", "bucket"), [
+    ("200.1.2.3", "200.1.2.3"), ("2001:db8:1:2:aaaa::1", "2001:db8:1:2::/64"),
+    ("2001:db8:1:2:ffff:ffff:ffff:ffff", "2001:db8:1:2::/64"), ("::ffff:200.1.2.3", "200.1.2.3"),
+    ("nao-e-ip", INVALID_ADDRESS_BUCKET), ("1.2.3.4.5", INVALID_ADDRESS_BUCKET),
+])
+def test_address_buckets(address: str, bucket: str) -> None:
+    assert address_bucket(address) == bucket
+
+
+def test_rate_limiter_memory_is_capped() -> None:
+    limiter: RateLimiter = RateLimiter(max_keys=3)
+    for index in range(10):
+        limiter.hit("login", f"10.0.0.{index}", 5, 60, now=100.0 + index)
+    assert len(limiter) == 3
+    # As chaves recentes continuam contadas; as mais antigas foram descartadas.
+    assert limiter.blocked("login", "10.0.0.9", 1, 60, now=110.0) is not None
+
+
+def test_account_limit_blocks_and_records_separately() -> None:
+    limiter: RateLimiter = RateLimiter()
+    for _ in range(2):
+        assert limiter.blocked("conta", "ana@example.com", 2, 900, now=10.0) is None
+        limiter.record("conta", "ana@example.com", 900, now=10.0)
+    assert limiter.blocked("conta", "ana@example.com", 2, 900, now=11.0) == 900
+    assert limiter.blocked("conta", "ana@example.com", 2, 900, now=911.0) is None
+
+
+def test_rate_limit_diagnostics_log(isolated: None, monkeypatch: pytest.MonkeyPatch,
+                                    caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setenv("RATE_LIMIT_DIAGNOSTICS", "true")
+    with caplog.at_level("WARNING", logger="app.shared.security.rate_limit"):
+        call("POST", "/auth/login", json={"email": "invalido", "password": "senha-secreta-1"},
+             headers=[("X-Forwarded-For", "7.7.7.7"), ("X-Forwarded-For", "200.1.2.3")])
+    message: str = next(record.getMessage() for record in caplog.records if "rate_limit_client_ip" in record.getMessage())
+    assert "xff_header_lines=2" in message and "'7.7.7.7', '200.1.2.3'" in message
+    assert "trust_proxy=False" in message and "senha-secreta-1" not in message
 
 
 def test_license_routes_require_authentication(isolated: None) -> None:

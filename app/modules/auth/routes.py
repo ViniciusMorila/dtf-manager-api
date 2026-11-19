@@ -14,7 +14,7 @@ from app.modules.auth.schemas.registration import (
     RegistrationResponse,
 )
 from app.modules.users.schemas.input import UserCreate
-from app.shared.security.rate_limit import rate_limit
+from app.shared.security.rate_limit import limit_registration_email, rate_limit
 
 router: APIRouter = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -22,9 +22,10 @@ router: APIRouter = APIRouter(prefix="/auth", tags=["auth"])
 @router.post(
     "/register", response_model=RegistrationResponse, status_code=status.HTTP_201_CREATED,
     responses={code: {"model": RegistrationErrorResponse} for code in (409, 422, 429, 500, 503)},
-    dependencies=[Depends(rate_limit("auth_register"))],
+    dependencies=[Depends(rate_limit("auth_register", strict=True))],
 )
 def register(data: UserCreate, session: SessionDependency) -> RegistrationResponse:
+    limit_registration_email(str(data.email))
     return register_user(data, session)
 
 
