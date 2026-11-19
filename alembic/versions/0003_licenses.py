@@ -28,6 +28,9 @@ activation_key_status = postgresql.ENUM("DISPONIVEL", "USADA", "CANCELADA",
                                         name="activation_key_status", create_type=False)
 ENUMS: tuple[postgresql.ENUM, ...] = (user_role, license_plan, license_status, activation_key_status)
 LICENSE_TABLES: tuple[str, ...] = ("licenses", "activation_keys", "trial_usages", "license_resets")
+# ALTER TABLE users/refresh_tokens pede lock exclusivo; sem limite, a espera por ele
+# bloquearia todas as consultas a essas tabelas. Com 5 s, a migration falha e pode ser repetida.
+LOCK_TIMEOUT: str = "5s"
 DOWNGRADE_CONFIRMATION_VARIABLE: str = "CONFIRMAR_DOWNGRADE_LICENCAS"
 DOWNGRADE_CONFIRMATION_VALUE: str = "apagar-dados-de-licencas"
 
@@ -50,7 +53,13 @@ def ensure_downgrade_allowed(bind: sa.engine.Connection, confirmation: str | Non
     return counts
 
 
+def set_lock_timeout() -> None:
+    """Vale só para a transação da migration (SET LOCAL)."""
+    op.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
+
+
 def upgrade() -> None:
+    set_lock_timeout()
     bind = op.get_bind()
     for enum in ENUMS:
         enum.create(bind, checkfirst=False)
@@ -157,6 +166,7 @@ def downgrade() -> None:
     Apaga licenças, chaves (inclusive vendidas e não usadas) e histórico de resets.
     Com dados presentes, exige CONFIRMAR_DOWNGRADE_LICENCAS=apagar-dados-de-licencas.
     """
+    set_lock_timeout()
     if op.get_context().as_sql:
         op.execute("-- ATENCAO: este SQL apaga definitivamente licencas, chaves e historico de resets. "
                    "Faca backup (pg_dump) antes de aplicar.")

@@ -723,6 +723,11 @@ cd /app
 /app/.venv/bin/python -m alembic current   # esperado: 0003_licenses (head)
 ```
 
+A migration usa `lock_timeout` de 5 segundos. Se houver muito tráfego e ela não
+conseguir o lock de `users` ou `refresh_tokens` a tempo, ela falha com
+`canceling statement due to lock timeout` sem alterar nada (é transacional). Basta
+repetir o comando, de preferência num horário de pouco uso.
+
 Para desfazer: o downgrade remove as tabelas de licença, `users.role` e
 `refresh_tokens.machine_id`, e `users.cpf` só volta a ser obrigatório se nenhuma conta
 estiver sem CPF. **Isso apaga definitivamente** licenças, chaves vendidas e ainda não
