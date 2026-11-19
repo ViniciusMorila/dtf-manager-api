@@ -73,7 +73,9 @@ existente também trazem `licenca` e `servidor_agora`:
 ## Fluxo recomendado no aplicativo
 
 1. **Primeiro uso:** `POST /auth/register` cria a conta e o teste de 7 dias
-   nesta máquina. Em seguida, `POST /auth/login`.
+   nesta máquina. Em seguida, `POST /auth/login`. Quem já usou o teste
+   (`TESTE_JA_UTILIZADO`) e tem uma chave se cadastra enviando também
+   `chave_ativacao`: a conta nasce com o plano da chave, sem teste.
 2. **Login:** `POST /auth/login` com `id_maquina`. Em caso de sucesso, guarde os
    tokens e a `licenca`.
 3. **A cada abertura:** `GET /licencas/status` com o Bearer e o cabeçalho
@@ -110,6 +112,37 @@ existente também trazem `licenca` e `servidor_agora`:
 - O cadastro cria a conta e a licença `TESTE` em uma única transação. Ele só
   acontece se **nem** a máquina **nem** o telefone já tiverem usado um teste,
   mesmo que a conta antiga tenha sido apagada.
+- `chave_ativacao` (opcional; também aceita `activation_key`) cadastra **com
+  chave**: veja a seção abaixo. Sem o campo, nada muda.
+
+#### Cadastro com `chave_ativacao`
+
+```json
+{ "nome": "Maria Silva", "telefone": "(11) 91234-5678", "email": "maria@example.com",
+  "senha": "Exemplo123", "id_maquina": "c0ffee00-1234-4abc-9def-001122334455",
+  "chave_ativacao": "K7QM-2XTA-9PHD-WR4E" }
+```
+
+Em **uma única transação** a API valida a chave (mesmas regras e códigos de
+`/licencas/ativar-chave`: minúsculas, espaços e hífens são aceitos), cria o
+usuário, cria a licença com o plano da chave presa ao `id_maquina` e marca a
+chave como usada. Qualquer falha desfaz tudo: nenhuma conta é criada e a chave
+continua como estava.
+
+- **Sem teste e sem travas de teste:** nenhum teste de 7 dias é criado, e a
+  máquina e o telefone já terem usado um teste **não** impedem o cadastro. O
+  telefone só é preso pelo teste; uma licença paga não prende o telefone.
+- **A máquina fica presa a teste depois:** o `id_maquina` é registrado na trava
+  de teste, então ele nunca recebe um teste (mesmo que a conta seja apagada).
+- Chave inexistente, já usada, cancelada ou mal formatada (inclusive vazia):
+  `CHAVE_INVALIDA` (422), sem conta. A chave não é consumida por recusas que a
+  precedem (`EMAIL_ALREADY_EXISTS`, `CPF_ALREADY_EXISTS`, `MAQUINA_EM_USO`).
+- Máquina com licença ativa de outra conta: `MAQUINA_EM_USO` (409).
+- A resposta é a mesma do cadastro sem chave; `licenca.plano` é o da chave
+  (`vitalicia: true` e `data_expiracao: null` para `VITALICIO`).
+- Cada `CHAVE_INVALIDA` no cadastro conta no limite de **senha errada por
+  e-mail** (veja Rate limit). Atingido o limite, o cadastro com chave desse
+  e-mail recusa com `MUITAS_TENTATIVAS`.
 
 **201 Created**
 
@@ -130,6 +163,7 @@ O cadastro não devolve tokens; faça o login em seguida.
 - `MAQUINA_EM_USO` (409)
 - `EMAIL_ALREADY_EXISTS` (409)
 - `CPF_ALREADY_EXISTS` (409)
+- `CHAVE_INVALIDA` (422): só quando `chave_ativacao` é enviada
 - `TELEFONE_INVALIDO` (422)
 - `ID_MAQUINA_INVALIDO` (422)
 - `WEAK_PASSWORD` (422)
@@ -137,6 +171,7 @@ O cadastro não devolve tokens; faça o login em seguida.
 - `INVALID_PLAN` (422)
 - `VALIDATION_ERROR` (422)
 - `MUITAS_TENTATIVAS` (429)
+- `LICENCA_INDISPONIVEL` (503): só com `chave_ativacao`, sem o segredo das chaves configurado
 - `REGISTRATION_UNAVAILABLE` (503)
 - `REGISTRATION_FAILED` (500)
 
@@ -350,7 +385,7 @@ outra licença ativa), `VALIDATION_ERROR` (422) e `LICENCA_INDISPONIVEL` (503).
 | `LICENCA_BLOQUEADA` | 403 | Bloqueada pelo administrador |
 | `LICENCA_NAO_ENCONTRADA` | 404 | Conta sem licença (ou licença inexistente, no admin) |
 | `LICENCA_JA_VITALICIA` | 409 | Qualquer chave em licença vitalícia ativa; chave preservada |
-| `CHAVE_INVALIDA` | 422 / 409 | Chave inexistente, usada ou cancelada (409 ao cancelar chave não disponível) |
+| `CHAVE_INVALIDA` | 422 / 409 | Chave inexistente, usada ou cancelada, na ativação e no cadastro com chave (409 ao cancelar chave não disponível) |
 | `CHAVE_NAO_ENCONTRADA` | 404 | ID de chave inexistente (admin) |
 | `LIMITE_RESETS` | 409 | 3 resets nos últimos 12 meses; inclui `resets_ultimos_12_meses` e `limite` |
 | `TELEFONE_INVALIDO` | 422 | Telefone fora do formato brasileiro com DDD |
@@ -371,7 +406,7 @@ o cabeçalho `Retry-After` (em segundos). O app deve mostrar a mensagem e aguard
 | Login e ativar-chave | 10 por minuto, por rota | IP |
 | Cadastro | 5 por hora | IP |
 | Cadastro | 3 por hora | E-mail (de qualquer IP) |
-| Senha errada | 10 a cada 15 minutos | E-mail, somando login e ativar-chave com senha, de qualquer IP |
+| Senha errada | 10 a cada 15 minutos | E-mail, somando login, ativar-chave com senha e `CHAVE_INVALIDA` no cadastro com chave, de qualquer IP |
 
 - Os limites por IP valem também para requisições inválidas.
 - O limite de senha errada conta só as falhas. Atingido, ele recusa até a senha

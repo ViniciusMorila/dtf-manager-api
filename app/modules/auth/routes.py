@@ -14,7 +14,13 @@ from app.modules.auth.schemas.registration import (
     RegistrationResponse,
 )
 from app.modules.users.schemas.input import UserCreate
-from app.shared.security.rate_limit import limit_registration_email, rate_limit
+from app.shared.exceptions.license import InvalidActivationKey
+from app.shared.security.rate_limit import (
+    ensure_account_not_limited,
+    limit_registration_email,
+    rate_limit,
+    record_password_failure,
+)
 
 router: APIRouter = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -26,7 +32,15 @@ router: APIRouter = APIRouter(prefix="/auth", tags=["auth"])
 )
 def register(data: UserCreate, session: SessionDependency) -> RegistrationResponse:
     limit_registration_email(str(data.email))
-    return register_user(data, session)
+    if data.activation_key is None:
+        return register_user(data, session)
+    # Chaves erradas contam no mesmo limite por conta das senhas erradas (login e ativar-chave).
+    ensure_account_not_limited(str(data.email))
+    try:
+        return register_user(data, session)
+    except InvalidActivationKey:
+        record_password_failure(str(data.email))
+        raise
 
 
 @router.post(

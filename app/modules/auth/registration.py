@@ -1,4 +1,4 @@
-"""Cadastro atômico de usuário, licença TESTE e, opcionalmente, assinatura pendente."""
+"""Cadastro atômico de usuário, licença (TESTE ou a da chave de ativação) e assinatura pendente opcional."""
 
 from datetime import datetime
 
@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 from app.modules.auth.schemas.registration import RegistrationResponse
 from app.modules.licenses.models import License
 from app.modules.licenses.service import (
+    create_license_from_key,
     create_trial,
+    key_digest,
     to_public,
     translate_integrity_error,
     utc_now,
@@ -32,7 +34,7 @@ from app.shared.security.password import hash_password
 
 
 def register_user(data: UserCreate, session: Session) -> RegistrationResponse:
-    """Um único commit; qualquer falha (inclusive a trava de teste) reverte também o usuário."""
+    """Um único commit; qualquer falha (trava de teste, chave inválida) reverte também o usuário."""
     try:
         with session.begin():
             if session.scalar(select(User.id).where(func.lower(User.email) == str(data.email))) is not None:
@@ -55,8 +57,15 @@ def register_user(data: UserCreate, session: Session) -> RegistrationResponse:
             session.add(user)
             session.flush()
             now: datetime = utc_now()
-            license: License = create_trial(session, user_id=user.id, phone=data.phone,
-                                            machine_id=data.machine_id, now=now)
+            license: License
+            if data.activation_key is None:
+                license = create_trial(session, user_id=user.id, phone=data.phone,
+                                       machine_id=data.machine_id, now=now)
+            else:
+                # Depois das checagens de e-mail e CPF: quem erra a chave só é contado se a conta é nova.
+                license = create_license_from_key(
+                    session, user_id=user.id, phone=data.phone, machine_id=data.machine_id,
+                    digest=key_digest(data.activation_key), now=now)
             subscription: Subscription | None = None
             if plan is not None:
                 subscription = Subscription(

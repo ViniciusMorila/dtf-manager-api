@@ -24,7 +24,9 @@ from app.shared.utils.phone import normalize_phone
 
 
 class UserCreate(InputSchema):
-    """Cadastro do aplicativo: cria a conta e a licença TESTE vinculada à máquina e ao telefone.
+    """Cadastro do aplicativo: cria a conta e a licença vinculada à máquina e ao telefone.
+
+    Sem `chave_ativacao` a licença é o TESTE de 7 dias; com ela, o plano da chave.
 
     `cpf` e `plan_code` continuam aceitos (opcionais) para o fluxo de pagamento existente.
     """
@@ -40,6 +42,10 @@ class UserCreate(InputSchema):
     machine_id: str = Field(validation_alias=AliasChoices("id_maquina", "machine_id"))
     cpf: str | None = None
     plan_code: PlanCode | None = None
+    # Com chave: a licença do plano da chave substitui o teste de 7 dias. Validada no cadastro.
+    activation_key: str | None = Field(
+        default=None, max_length=64, exclude=True, repr=False,
+        validation_alias=AliasChoices("chave_ativacao", "activation_key"))
 
     @field_validator("email")
     @classmethod

@@ -124,13 +124,16 @@ class Api:
 
         return asyncio.run(run())
 
-    def register(self, *, phone: str | None = None, machine: str | None = None) -> tuple[Account, Response]:
+    def register(self, *, phone: str | None = None, machine: str | None = None,
+                 key: str | None = None) -> tuple[Account, Response]:
         account = Account(email=f"{uuid4().hex}@example.com", password=secrets.token_urlsafe(16) + "a1",
                           phone=phone or random_phone(), machine=machine or random_machine())
-        response: Response = self.request("POST", "/auth/register", json={
+        body: dict[str, Any] = {
             "nome": "Cliente Teste", "telefone": account.phone, "email": account.email,
-            "senha": account.password, "id_maquina": account.machine})
-        return account, response
+            "senha": account.password, "id_maquina": account.machine}
+        if key is not None:
+            body["chave_ativacao"] = key
+        return account, self.request("POST", "/auth/register", json=body)
 
     def login(self, account: Account, machine: str | None = "__same__") -> Response:
         body: dict[str, Any] = {"email": account.email, "senha": account.password}
@@ -247,6 +250,134 @@ def test_trial_lock_survives_account_deletion(api: Api, db: Session) -> None:
     assert db.scalar(select(TrialUsage.user_id).where(TrialUsage.machine_id == account.machine.lower())) is None
     _, response = api.register(machine=account.machine)
     assert error_code(response) == "TESTE_JA_UTILIZADO"
+
+
+def forget_account(db: Session, account: Account) -> None:
+    """Apaga a conta (e a licença em cascata); a trava de teste da máquina e do telefone permanece."""
+    settle(db)
+    with db.begin():
+        db.execute(delete(User).where(User.email == account.email))
+
+
+def hmac_key(key: str) -> str:
+    return hmac.new(Settings().validate_activation_key_secret().encode(), key.encode(), sha256).hexdigest()
+
+
+def key_status(db: Session, key: str) -> ActivationKeyStatus:
+    settle(db)
+    db.expire_all()
+    status: ActivationKeyStatus = db.scalars(select(ActivationKey.status).where(
+        ActivationKey.key_hash == hmac_key(key))).one()
+    settle(db)
+    return status
+
+
+def test_registration_with_key_after_trial_used_on_machine(api: Api, admin: Account, db: Session) -> None:
+    used, _ = api.register()
+    forget_account(db, used)
+    key: str = new_key(api, admin, "ANUAL")
+    account, response = api.register(machine=used.machine, key=key)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["licenca"]["plano"] == "ANUAL" and body["licenca"]["vitalicia"] is False
+    assert body["licenca"]["dias_restantes"] >= 364
+    license: License = api.license_of(account)
+    assert license.plan == LicensePlanCode.ANUAL and license.machine_id == used.machine.lower()
+    assert key_status(db, key) == ActivationKeyStatus.USADA
+    # Nenhum teste foi criado: a trava continua só com o registro antigo da máquina.
+    assert db.scalars(select(TrialUsage).where(TrialUsage.machine_id == used.machine.lower())).one().user_id is None
+    assert api.login(account).status_code == 200
+
+
+def test_registration_with_key_after_trial_used_with_phone(api: Api, admin: Account, db: Session) -> None:
+    used, _ = api.register()
+    digits: str = "".join(ch for ch in used.phone if ch.isdigit())
+    key: str = new_key(api, admin, "MENSAL")
+    account, response = api.register(phone=used.phone, key=key)
+    assert response.status_code == 201, response.text
+    assert response.json()["licenca"]["plano"] == "MENSAL"
+    assert api.license_of(account).phone == digits
+    # O telefone continua preso só ao teste: não há nova linha de trava com ele.
+    assert len(db.scalars(select(TrialUsage).where(TrialUsage.phone == digits)).all()) == 1
+    # A máquina que comprou também não recebe um teste depois.
+    forget_account(db, account)
+    _, refused = api.register(machine=account.machine)
+    assert refused.status_code == 409 and error_code(refused) == "TESTE_JA_UTILIZADO"
+
+
+def test_registration_with_invalid_key_creates_nothing(api: Api, db: Session) -> None:
+    for bad in ("ABCD-EFGH-JKMN-PQRS", "nao-e-chave", ""):
+        account, response = api.register(key=bad)
+        assert response.status_code == 422 and error_code(response) == "CHAVE_INVALIDA", bad
+        settle(db)
+        assert db.scalar(select(User.id).where(User.email == account.email)) is None
+        assert db.scalar(select(TrialUsage.id).where(TrialUsage.machine_id == account.machine.lower())) is None
+        assert db.scalar(select(License.id).where(License.machine_id == account.machine.lower())) is None
+    # A mesma máquina ainda pode abrir o teste depois: nada ficou preso.
+    machine: str = random_machine()
+    api.register(machine=machine, key="ABCD-EFGH-JKMN-PQRS")
+    _, trial = api.register(machine=machine)
+    assert trial.status_code == 201 and trial.json()["licenca"]["plano"] == "TESTE"
+
+
+def test_registration_with_used_key_is_refused_without_account(api: Api, admin: Account, db: Session) -> None:
+    key: str = new_key(api, admin, "SEMESTRAL")
+    first, ok = api.register(key=key)
+    assert ok.status_code == 201
+    second, response = api.register(key=key.lower())
+    assert response.status_code == 422 and error_code(response) == "CHAVE_INVALIDA"
+    settle(db)
+    assert db.scalar(select(User.id).where(User.email == second.email)) is None
+    assert api.license_of(first).plan == LicensePlanCode.SEMESTRAL
+
+
+def test_registration_with_cancelled_key_is_refused(api: Api, admin: Account, db: Session) -> None:
+    key: str = new_key(api, admin, "ANUAL")
+    settle(db)
+    with db.begin():
+        db.execute(update(ActivationKey).where(ActivationKey.key_hash == hmac_key(key))
+                   .values(status=ActivationKeyStatus.CANCELADA))
+    account, response = api.register(key=key)
+    assert response.status_code == 422 and error_code(response) == "CHAVE_INVALIDA"
+    settle(db)
+    assert db.scalar(select(User.id).where(User.email == account.email)) is None
+
+
+def test_registration_with_lifetime_key(api: Api, admin: Account) -> None:
+    account, response = api.register(key=new_key(api, admin, "VITALICIO"))
+    assert response.status_code == 201, response.text
+    licenca = response.json()["licenca"]
+    assert licenca["plano"] == "VITALICIO" and licenca["vitalicia"] is True
+    assert licenca["data_expiracao"] is None and licenca["dias_restantes"] is None
+    assert api.license_of(account).expires_at is None
+
+
+def test_registration_with_key_on_machine_of_another_active_license_keeps_key(
+        api: Api, admin: Account, db: Session) -> None:
+    owner, _ = api.register()
+    key: str = new_key(api, admin, "ANUAL")
+    account, response = api.register(machine=owner.machine, key=key)
+    assert response.status_code == 409 and error_code(response) == "MAQUINA_EM_USO"
+    assert key_status(db, key) == ActivationKeyStatus.DISPONIVEL
+    assert db.scalar(select(User.id).where(User.email == account.email)) is None
+
+
+def test_registration_with_key_for_existing_email_does_not_consume_key(api: Api, admin: Account, db: Session) -> None:
+    existing, _ = api.register()
+    key: str = new_key(api, admin, "MENSAL")
+    response: Response = api.request("POST", "/auth/register", json={
+        "nome": "Outra", "telefone": random_phone(), "email": existing.email, "senha": "outra-senha-1a",
+        "id_maquina": random_machine(), "chave_ativacao": key})
+    assert response.status_code == 409 and error_code(response) == "EMAIL_ALREADY_EXISTS"
+    assert key_status(db, key) == ActivationKeyStatus.DISPONIVEL
+
+
+def test_registration_without_key_is_unchanged(api: Api, db: Session) -> None:
+    account, response = api.register()
+    assert response.status_code == 201 and response.json()["licenca"]["plano"] == "TESTE"
+    trial: TrialUsage = db.scalars(select(TrialUsage).where(TrialUsage.machine_id == account.machine.lower())).one()
+    assert trial.phone == api.license_of(account).phone
+    assert api.register(machine=account.machine)[1].status_code == 409
 
 
 def test_invalid_phone_code(api: Api) -> None:
@@ -640,6 +771,25 @@ def test_registration_is_limited_per_email(account_limits: None, api: Api) -> No
     assert error_code(attempt()) == "EMAIL_ALREADY_EXISTS"
     blocked: Response = attempt()
     assert blocked.status_code == 429 and error_code(blocked) == "MUITAS_TENTATIVAS"
+
+
+def test_invalid_keys_in_registration_count_in_the_account_limit(account_limits: None, api: Api,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RATE_LIMIT_REGISTER_EMAIL_REQUESTS", "100")
+    email: str = f"{uuid4().hex}@example.com"
+
+    def attempt(address: str, key: str) -> Response:
+        return api.request("POST", "/auth/register", json={
+            "nome": "Cliente", "telefone": random_phone(), "email": address,
+            "senha": secrets.token_urlsafe(12) + "a1", "id_maquina": random_machine(),
+            "chave_ativacao": key})
+
+    assert [error_code(attempt(email, "ABCD-EFGH-JKMN-PQRS")) for _ in range(3)] == ["CHAVE_INVALIDA"] * 3
+    blocked: Response = attempt(email, "ABCD-EFGH-JKMN-PQRS")
+    assert blocked.status_code == 429 and error_code(blocked) == "MUITAS_TENTATIVAS"
+    assert "retry-after" in blocked.headers
+    # O limite é por conta: outro e-mail não é afetado.
+    assert attempt(f"{uuid4().hex}@example.com", "ABCD-EFGH-JKMN-PQRS").status_code == 422
 
 
 # --- Sessões: sessão única, refresh com licença e máquina, revogação -------------------------

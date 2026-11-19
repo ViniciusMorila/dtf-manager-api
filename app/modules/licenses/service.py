@@ -195,6 +195,69 @@ def create_trial(session: Session, *, user_id: UUID, phone: str, machine_id: str
     return license
 
 
+def key_digest(raw_key: str) -> str:
+    """Digest da chave informada; formato impossível é CHAVE_INVALIDA e falta de pepper é 503."""
+    key: str | None = normalize_activation_key(raw_key)
+    if key is None:
+        raise InvalidActivationKey()
+    try:
+        return hash_activation_key(key, activation_key_secret())
+    except ValueError:
+        raise LicenseError() from None
+
+
+def lock_available_key(session: Session, digest: str) -> ActivationKey:
+    """Trava a chave; inexistente, usada ou cancelada têm a mesma resposta."""
+    activation: ActivationKey | None = session.scalar(
+        select(ActivationKey).where(ActivationKey.key_hash == digest)
+        .with_for_update().execution_options(populate_existing=True),
+    )
+    if activation is None or activation.status != ActivationKeyStatus.DISPONIVEL:
+        raise InvalidActivationKey()
+    return activation
+
+
+def lock_trial_for_machine(session: Session, *, machine_id: str, user_id: UUID) -> None:
+    """Uma máquina que recebeu licença sem passar pelo teste também não recebe teste depois.
+
+    Só a máquina entra em trial_usages (phone nulo): o telefone de quem comprou não fica
+    preso, porque a unicidade do telefone vale apenas para quem usou o teste.
+    """
+    session.execute(pg_insert(TrialUsage).values(
+        machine_id=machine_id, phone=None, user_id=user_id,
+    ).on_conflict_do_nothing())
+
+
+def create_license_from_key(session: Session, *, user_id: UUID, phone: str, machine_id: str,
+                            digest: str, now: datetime) -> License:
+    """Licença paga criada no cadastro, sem teste e sem as travas de teste (máquina e telefone).
+
+    Executa dentro da transação do cadastro: a chave só é consumida se a conta for criada.
+    O lock da máquina é o mesmo do teste, então cadastros concorrentes na mesma máquina
+    (com ou sem chave) são serializados. Recusas ligadas à máquina vêm antes da consulta
+    à chave, como em redeem_key.
+    """
+    session.execute(text("SELECT pg_advisory_xact_lock(:namespace, hashtext(:value))"),
+                    {"namespace": _TRIAL_MACHINE_LOCK, "value": machine_id})
+    if session.scalar(select(License.id).where(
+            License.machine_id == machine_id, License.status == LicenseState.ATIVA).limit(1)) is not None:
+        raise MachineInUse()
+    activation: ActivationKey = lock_available_key(session, digest)
+    license: License = License(
+        user_id=user_id, plan=activation.plan, status=LicenseState.ATIVA, activated_at=now,
+        expires_at=plan_end(activation.plan, now), machine_id=machine_id, phone=phone,
+        reset_count=0, last_reset_at=None,
+    )
+    session.add(license)
+    session.flush()
+    lock_trial_for_machine(session, machine_id=machine_id, user_id=user_id)
+    activation.status = ActivationKeyStatus.USADA
+    activation.used_at = now
+    activation.license_id = license.id
+    session.flush()
+    return license
+
+
 def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
                machine_id: str | None) -> AtivarChaveResponse:
     """Marca a chave como usada e aplica o plano conforme a regra de renovação.
@@ -203,13 +266,7 @@ def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
     acontecem ANTES de consultar a chave: a resposta não revela se ela existe.
     Só o formato é verificado antes, por não ser segredo.
     """
-    key: str | None = normalize_activation_key(raw_key)
-    if key is None:
-        raise InvalidActivationKey()
-    try:
-        digest: str = hash_activation_key(key, activation_key_secret())
-    except ValueError:
-        raise LicenseError() from None
+    digest: str = key_digest(raw_key)
     now: datetime = utc_now()
     try:
         with session.begin():
@@ -232,12 +289,7 @@ def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
                         raise machine_error
                 if license.plan == LicensePlanCode.VITALICIO and is_currently_valid(license, now):
                     raise LicenseAlreadyLifetime()
-            activation: ActivationKey | None = session.scalar(
-                select(ActivationKey).where(ActivationKey.key_hash == digest)
-                .with_for_update().execution_options(populate_existing=True),
-            )
-            if activation is None or activation.status != ActivationKeyStatus.DISPONIVEL:
-                raise InvalidActivationKey()
+            activation: ActivationKey = lock_available_key(session, digest)
             if license is None:
                 license = License(
                     user_id=user_id, plan=activation.plan, status=LicenseState.ATIVA, activated_at=now,
@@ -246,6 +298,8 @@ def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
                 )
                 session.add(license)
                 session.flush()
+                if not is_admin and machine_id is not None:
+                    lock_trial_for_machine(session, machine_id=machine_id, user_id=user_id)
             else:
                 license.expires_at = renewed_expiration(license, activation.plan, now)
                 license.plan = activation.plan
