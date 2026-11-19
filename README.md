@@ -648,7 +648,8 @@ sempre cria `USER`.
   do servidor, e gravada como `EXPIRADA` antes da recusa.
 - **Rate limit:** em memória. Login e ativar-chave são limitados por IP. O cadastro é
   mais restrito, por IP e por e-mail. Senhas erradas são contadas por e-mail, somando
-  as duas rotas que verificam senha. IPv6 é agrupado por /64. Os valores estão em
+  as duas rotas que verificam senha. Refresh, logout e `GET /licencas/status` têm limites
+  generosos por IP e por usuário. IPv6 é agrupado por /64. Os valores estão em
   `docs/API_LICENCAS.md`. Com um único processo Uvicorn, a contagem é exata; com várias
   réplicas, cada uma conta separadamente.
 

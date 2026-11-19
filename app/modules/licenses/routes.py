@@ -24,7 +24,7 @@ from app.modules.licenses.schemas.contract import (
 from app.modules.licenses.service import license_status, redeem_key
 from app.modules.subscriptions.schemas.license import LicenseStatus
 from app.shared.exceptions.authentication import InvalidAccessToken
-from app.shared.security.rate_limit import rate_limit
+from app.shared.security.rate_limit import limit_user, rate_limit, session_rate_limit
 from app.shared.utils.machine import MachineId
 
 router: APIRouter = APIRouter(prefix="/license", tags=["license"])
@@ -38,13 +38,15 @@ def license_status_route(license: LicenseStatusDependency, response: Response) -
     return license
 
 
-@licencas_router.get("/status", response_model=LicencaStatusResponse, responses=_ERRORS)
+@licencas_router.get("/status", response_model=LicencaStatusResponse, responses=_ERRORS,
+                     dependencies=[Depends(session_rate_limit("licencas_status"))])
 def licenca_status(
     user: CurrentUserDependency, session: SessionDependency, response: Response,
     id_maquina: Annotated[MachineId | None, Header(alias="X-Id-Maquina")] = None,
 ) -> LicencaStatusResponse:
     """Chamado a cada abertura do aplicativo; recusa com código estável quando não pode usar."""
     response.headers["Cache-Control"] = "no-store"
+    limit_user("licencas_status", user.id)
     return license_status(session, user_id=user.id, is_admin=user.is_admin, machine_id=id_maquina)
 
 

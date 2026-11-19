@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # Senhas erradas por conta (login e ativar-chave com e-mail/senha somados), de qualquer IP.
     rate_limit_account_requests: int = Field(default=10, gt=0)
     rate_limit_account_window_seconds: int = Field(default=900, gt=0)
+    # Refresh, logout e GET /licencas/status: generosos, pois o app valida a cada hora e ao abrir.
+    # Por IP e por rota (vários PCs atrás do mesmo IP) e por usuário e por rota.
+    rate_limit_session_requests: int = Field(default=120, gt=0)
+    rate_limit_session_window_seconds: int = Field(default=60, gt=0)
+    rate_limit_user_requests: int = Field(default=30, gt=0)
+    rate_limit_user_window_seconds: int = Field(default=600, gt=0)
     # Só ligue depois de conferir nos logs que o proxy adiciona o IP real ao final de X-Forwarded-For.
     rate_limit_trust_proxy: bool = False
     # Diagnóstico temporário: registra X-Forwarded-For e o IP escolhido (contém IPs; desligue depois).

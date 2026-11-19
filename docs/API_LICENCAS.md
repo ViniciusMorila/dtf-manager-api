@@ -233,6 +233,8 @@ Cabeçalhos: `Authorization: Bearer <access_token>` e
 
 **Erros:**
 - `INVALID_ACCESS_TOKEN` (401): use o refresh e tente de novo.
+- `MUITAS_TENTATIVAS` (429): aguarde o `Retry-After`; **não** trate como licença inválida
+  nem como sessão encerrada. Mantenha o estado atual e tente de novo depois.
 - `ID_MAQUINA_INVALIDO` (422)
 - `MAQUINA_DIFERENTE` (403)
 - `MAQUINA_EM_USO` (409)
@@ -319,15 +321,43 @@ comuns). Uma recusa de licença ou de máquina **não** consome o refresh token.
 - `LICENCA_EXPIRADA` (403): o status é gravado como `EXPIRADA`.
 - `LICENCA_BLOQUEADA` (403)
 - `LICENCA_NAO_ENCONTRADA` (404)
+- `MUITAS_TENTATIVAS` (429): o refresh token **não** foi consumido; aguarde o `Retry-After`
 - `AUTHENTICATION_UNAVAILABLE` (503) / `AUTHENTICATION_FAILED` (500)
 
 ### Rotas existentes que continuam iguais
 
-`POST /auth/logout`, `GET /me`, `GET /plans`, `POST /payments/checkout` e
-`GET /payments/{id}` não mudaram. `GET /license/status` e `GET /me` continuam
+`POST /auth/logout` (agora com rate limit, veja abaixo), `GET /me`, `GET /plans`,
+`POST /payments/checkout` e `GET /payments/{id}` não mudaram de formato. `GET /license/status` e `GET /me` continuam
 refletindo a **assinatura de pagamento** (Mercado Pago), não a licença do
 aplicativo. Mesmo com o refresh validando a licença, chame `GET /licencas/status`
 a cada abertura.
+
+## Mudanças no contrato
+
+Alterações em relação à versão anterior deste documento:
+
+1. **`POST /auth/register` aceita `chave_ativacao` (opcional).** Campo novo no corpo
+   (alias `activation_key`). Sem ele, o comportamento é idêntico ao anterior. Com
+   ele: sem teste e sem as travas de teste, licença do plano da chave presa à
+   máquina, chave consumida na mesma transação, e a resposta tem o mesmo formato
+   (`licenca.plano` é o da chave). Novos usos de códigos existentes neste endpoint:
+   `CHAVE_INVALIDA` (422) e `LICENCA_INDISPONIVEL` (503).
+2. **A máquina que se cadastrou com chave fica presa a teste**: nunca mais recebe
+   um período de teste (`TESTE_JA_UTILIZADO`), mesmo que a conta seja apagada. O
+   telefone não é preso por licença paga.
+3. **`CHAVE_INVALIDA` no cadastro conta no limite de senha errada por e-mail**
+   (`MUITAS_TENTATIVAS` ao atingir 10 em 15 minutos), junto com login e ativar-chave.
+4. **Rate limit novo em `POST /auth/refresh`, `POST /auth/logout` e
+   `GET /licencas/status`**, que antes não tinham: 120 por minuto por IP e por rota,
+   e 30 a cada 10 minutos por usuário e por rota. Essas três rotas agora podem
+   responder `429 MUITAS_TENTATIVAS` com `Retry-After`. O `429` do refresh não consome
+   o token. **O aplicativo deve tratar `429` nessas rotas como falha temporária**
+   (repetir depois, sem encerrar a sessão e sem liberar nem bloquear o uso por conta
+   disso, conforme as regras de tolerância offline).
+5. Variáveis novas: `RATE_LIMIT_SESSION_REQUESTS`, `RATE_LIMIT_SESSION_WINDOW_SECONDS`,
+   `RATE_LIMIT_USER_REQUESTS`, `RATE_LIMIT_USER_WINDOW_SECONDS`.
+
+Nada foi removido nem renomeado, e não há migration nova.
 
 ## Rotas do administrador
 
@@ -406,9 +436,19 @@ o cabeçalho `Retry-After` (em segundos). O app deve mostrar a mensagem e aguard
 | Login e ativar-chave | 10 por minuto, por rota | IP |
 | Cadastro | 5 por hora | IP |
 | Cadastro | 3 por hora | E-mail (de qualquer IP) |
+| Refresh, logout e `GET /licencas/status` | 120 por minuto, por rota | IP |
+| Refresh, logout e `GET /licencas/status` | 30 a cada 10 minutos, por rota | Usuário (de qualquer IP) |
 | Senha errada | 10 a cada 15 minutos | E-mail, somando login, ativar-chave com senha e `CHAVE_INVALIDA` no cadastro com chave, de qualquer IP |
 
 - Os limites por IP valem também para requisições inválidas.
+- Os limites de refresh, logout e status são folgados de propósito: o app valida a
+  licença a cada 1 hora e na abertura, e renova a sessão quando o access expira.
+  Uso normal não chega perto (dezenas de chamadas por 10 minutos já seriam
+  anormais). Vários PCs atrás do mesmo IP têm 120 chamadas por minuto por rota.
+- Por usuário: em `GET /licencas/status` vale o dono do Bearer; em refresh e logout,
+  o dono do refresh token (só com assinatura válida e não expirado; um token
+  inválido conta apenas no IP). Um `429` no refresh **não consome** o refresh token:
+  aguarde o `Retry-After` e use o mesmo token, **sem encerrar a sessão**.
 - O limite de senha errada conta só as falhas. Atingido, ele recusa até a senha
   correta, até a janela passar, e vale também para e-mails inexistentes, para não
   revelar se a conta existe. Efeito colateral: alguém que erre a senha de uma conta
@@ -426,6 +466,10 @@ o cabeçalho `Retry-After` (em segundos). O app deve mostrar a mensagem e aguard
 | `RATE_LIMIT_REGISTER_REQUESTS` | `5` | Cadastros por IP na janela de cadastro |
 | `RATE_LIMIT_REGISTER_EMAIL_REQUESTS` | `3` | Cadastros por e-mail na janela de cadastro |
 | `RATE_LIMIT_REGISTER_WINDOW_SECONDS` | `3600` | Janela do cadastro, em segundos |
+| `RATE_LIMIT_SESSION_REQUESTS` | `120` | Refresh, logout e status: chamadas por janela, por IP e por rota |
+| `RATE_LIMIT_SESSION_WINDOW_SECONDS` | `60` | Janela do limite por IP dessas rotas, em segundos |
+| `RATE_LIMIT_USER_REQUESTS` | `30` | Refresh, logout e status: chamadas por janela, por usuário e por rota |
+| `RATE_LIMIT_USER_WINDOW_SECONDS` | `600` | Janela do limite por usuário dessas rotas, em segundos |
 | `RATE_LIMIT_ACCOUNT_REQUESTS` | `10` | Senhas erradas por e-mail antes de bloquear |
 | `RATE_LIMIT_ACCOUNT_WINDOW_SECONDS` | `900` | Janela das senhas erradas, em segundos |
 | `RATE_LIMIT_TRUST_PROXY` | `false` | Usa o último valor de `X-Forwarded-For` como IP. Ligue só depois de conferir o proxy (veja o README) |

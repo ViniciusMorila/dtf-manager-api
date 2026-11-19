@@ -12,9 +12,11 @@ from collections.abc import Callable
 from ipaddress import IPv6Address, ip_address, ip_network
 
 from fastapi import Request
+from jwt.exceptions import InvalidTokenError
 
 from app.core.config import Settings
 from app.shared.exceptions.api import TooManyRequests
+from app.shared.security.jwt import decode_refresh_token
 
 logger: logging.Logger = logging.getLogger(__name__)
 MAX_TRACKED_KEYS: int = 50_000
@@ -143,6 +145,46 @@ def rate_limit(scope: str, *, strict: bool = False) -> Callable[[Request], None]
         _raise_if_limited(limiter.hit(scope, bucket, limit, window))
 
     return dependency
+
+
+def session_rate_limit(scope: str) -> Callable[[Request], None]:
+    """Por IP e por rota, com limite generoso, para refresh, logout e status da licença."""
+
+    def dependency(request: Request) -> None:
+        settings: Settings = Settings()
+        if not settings.rate_limit_enabled:
+            return
+        bucket: str = client_address(request, settings)
+        if settings.rate_limit_diagnostics:
+            _log_diagnostic(request, settings, bucket)
+        _raise_if_limited(limiter.hit(scope, bucket, settings.rate_limit_session_requests,
+                                      settings.rate_limit_session_window_seconds))
+
+    return dependency
+
+
+def limit_user(scope: str, user_id: object) -> None:
+    """Por usuário e por rota, de qualquer IP; chamado depois de identificar o usuário."""
+    settings: Settings = Settings()
+    if settings.rate_limit_enabled:
+        _raise_if_limited(limiter.hit(f"user_{scope}", str(user_id), settings.rate_limit_user_requests,
+                                      settings.rate_limit_user_window_seconds))
+
+
+def limit_refresh_token_owner(scope: str, refresh_token: str) -> None:
+    """Limite por usuário usando o dono de um refresh token com assinatura válida.
+
+    Token inválido ou expirado não identifica ninguém e fica só com o limite por IP;
+    o usuário vem da assinatura, então não dá para gastar o limite de outra conta.
+    """
+    settings: Settings = Settings()
+    if not settings.rate_limit_enabled:
+        return
+    try:
+        subject: str = decode_refresh_token(refresh_token, settings=settings)["sub"]
+    except (InvalidTokenError, ValueError):
+        return
+    limit_user(scope, subject)
 
 
 def limit_registration_email(email: str) -> None:

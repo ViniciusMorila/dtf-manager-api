@@ -792,6 +792,76 @@ def test_invalid_keys_in_registration_count_in_the_account_limit(account_limits:
     assert attempt(f"{uuid4().hex}@example.com", "ABCD-EFGH-JKMN-PQRS").status_code == 422
 
 
+@pytest.fixture
+def session_limits(monkeypatch: pytest.MonkeyPatch, environment: None) -> None:
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_REQUESTS", "1000")
+    monkeypatch.setenv("RATE_LIMIT_REGISTER_REQUESTS", "1000")
+    monkeypatch.setenv("RATE_LIMIT_SESSION_REQUESTS", "1000")
+    monkeypatch.setenv("RATE_LIMIT_USER_REQUESTS", "1000")
+
+
+def test_status_is_limited_per_user_and_ip(session_limits: None, api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    first, _ = api.register()
+    second, _ = api.register()
+    api.login(first)
+    api.login(second)
+    monkeypatch.setenv("RATE_LIMIT_USER_REQUESTS", "2")
+    assert [api.status(first).status_code for _ in range(2)] == [200, 200]
+    blocked: Response = api.status(first)
+    assert blocked.status_code == 429 and error_code(blocked) == "MUITAS_TENTATIVAS"
+    assert int(blocked.headers["retry-after"]) >= 1
+    assert api.status(second).status_code == 200      # outro usuário, mesmo IP
+    monkeypatch.setenv("RATE_LIMIT_USER_REQUESTS", "1000")
+    monkeypatch.setenv("RATE_LIMIT_SESSION_REQUESTS", "3")
+    api.status(second)                                # o IP já contou 5 chamadas à rota: ela recusa
+    assert api.status(second).status_code == 429
+
+
+def test_refresh_limit_does_not_consume_the_token(session_limits: None, api: Api,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    account, _ = api.register()
+    token: str = api.login(account).json()["refresh_token"]
+    monkeypatch.setenv("RATE_LIMIT_USER_REQUESTS", "2")
+    for _ in range(2):
+        response: Response = refresh(api, token, account.machine)
+        assert response.status_code == 200, response.text
+        token = response.json()["refresh_token"]
+    blocked: Response = refresh(api, token, account.machine)
+    assert blocked.status_code == 429 and error_code(blocked) == "MUITAS_TENTATIVAS"
+    assert "access_token" not in blocked.text
+    monkeypatch.setenv("RATE_LIMIT_USER_REQUESTS", "1000")
+    assert refresh(api, token, account.machine).status_code == 200      # o token ainda valia
+
+
+def test_refresh_and_logout_are_limited_per_ip(session_limits: None, api: Api,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    account, _ = api.register()
+    token: str = api.login(account).json()["refresh_token"]
+    monkeypatch.setenv("RATE_LIMIT_SESSION_REQUESTS", "2")
+    for _ in range(2):
+        assert api.request("POST", "/auth/logout", json={"refresh_token": token}).status_code == 200
+    assert api.request("POST", "/auth/logout", json={"refresh_token": token}).status_code == 429
+    garbage: dict[str, str] = {"refresh_token": "nao-e-um-token"}
+    assert refresh(api, "nao-e-um-token", None).status_code == 401
+    assert refresh(api, "nao-e-um-token", None).status_code == 401
+    assert api.request("POST", "/auth/refresh", json=garbage).status_code == 429
+
+
+def test_normal_session_use_is_not_limited_by_default(session_limits: None, api: Api,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("RATE_LIMIT_SESSION_REQUESTS", "RATE_LIMIT_USER_REQUESTS"):
+        monkeypatch.delenv(name)
+    account, _ = api.register()
+    token: str = api.login(account).json()["refresh_token"]
+    for _ in range(10):      # app aberto várias vezes, com renovação de sessão no meio
+        assert api.status(account).status_code == 200
+    for _ in range(5):
+        response: Response = refresh(api, token, account.machine)
+        assert response.status_code == 200
+        token = response.json()["refresh_token"]
+
+
 # --- Sessões: sessão única, refresh com licença e máquina, revogação -------------------------
 
 def refresh(api: Api, refresh_token: str, machine: str | None) -> Response:

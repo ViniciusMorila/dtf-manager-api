@@ -17,9 +17,11 @@ from app.modules.users.schemas.input import UserCreate
 from app.shared.exceptions.license import InvalidActivationKey
 from app.shared.security.rate_limit import (
     ensure_account_not_limited,
+    limit_refresh_token_owner,
     limit_registration_email,
     rate_limit,
     record_password_failure,
+    session_rate_limit,
 )
 
 router: APIRouter = APIRouter(prefix="/auth", tags=["auth"])
@@ -57,9 +59,11 @@ def login(data: LoginRequest, session: SessionDependency, response: Response) ->
 
 @router.post(
     "/refresh", response_model=LoginResponse,
-    responses={code: {"model": RegistrationErrorResponse} for code in (401, 403, 404, 409, 422, 500, 503)},
+    responses={code: {"model": RegistrationErrorResponse} for code in (401, 403, 404, 409, 422, 429, 500, 503)},
+    dependencies=[Depends(session_rate_limit("auth_refresh"))],
 )
 def refresh(data: RefreshRequest, session: SessionDependency, response: Response) -> LoginResponse:
+    limit_refresh_token_owner("auth_refresh", data.refresh_token.get_secret_value())
     result: LoginResponse = refresh_session(data, session)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -68,9 +72,11 @@ def refresh(data: RefreshRequest, session: SessionDependency, response: Response
 
 @router.post(
     "/logout", response_model=LogoutResponse,
-    responses={code: {"model": RegistrationErrorResponse} for code in (422, 500, 503)},
+    responses={code: {"model": RegistrationErrorResponse} for code in (422, 429, 500, 503)},
+    dependencies=[Depends(session_rate_limit("auth_logout"))],
 )
 def logout(data: LogoutRequest, session: SessionDependency, response: Response) -> LogoutResponse:
+    limit_refresh_token_owner("auth_logout", data.refresh_token.get_secret_value())
     result: LogoutResponse = logout_session(data, session)
     response.headers["Cache-Control"] = "no-store"
     return result

@@ -23,6 +23,7 @@ from app.modules.licenses.rules import (
     renewed_expiration,
     state_after_change,
 )
+from app.shared.exceptions.api import TooManyRequests
 from app.shared.exceptions.license import LicenseAlreadyLifetime
 from app.shared.security.activation_key import (
     ALPHABET,
@@ -30,10 +31,13 @@ from app.shared.security.activation_key import (
     hash_activation_key,
     normalize_activation_key,
 )
+from app.shared.security.jwt import create_refresh_token
 from app.shared.security.rate_limit import (
     INVALID_ADDRESS_BUCKET,
     RateLimiter,
     address_bucket,
+    limit_refresh_token_owner,
+    limit_user,
 )
 from app.shared.utils.calendar import add_calendar_months
 from app.shared.utils.machine import normalize_machine_id
@@ -173,6 +177,61 @@ def test_rate_limit_applies_before_validation(isolated: None, monkeypatch: pytes
     assert blocked.status_code == 429
     assert blocked.json()["error"]["code"] == "MUITAS_TENTATIVAS"
     assert int(blocked.headers["retry-after"]) >= 1
+
+
+@pytest.mark.parametrize(("method", "path", "body"), [
+    ("POST", "/auth/refresh", {"refresh_token": ""}),
+    ("POST", "/auth/logout", {"refresh_token": ""}),
+    ("GET", "/licencas/status", None),
+])
+def test_session_routes_have_an_ip_limit_applied_before_validation(
+        isolated: None, monkeypatch: pytest.MonkeyPatch, method: str, path: str,
+        body: dict[str, str] | None) -> None:
+    monkeypatch.setenv("RATE_LIMIT_SESSION_REQUESTS", "3")
+    statuses: list[int] = [call(method, path, json=body).status_code for _ in range(3)]
+    assert 429 not in statuses
+    blocked: Response = call(method, path, json=body)
+    assert blocked.status_code == 429 and blocked.json()["error"]["code"] == "MUITAS_TENTATIVAS"
+    assert int(blocked.headers["retry-after"]) >= 1
+
+
+def test_session_routes_are_limited_per_route_not_together(isolated: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RATE_LIMIT_SESSION_REQUESTS", "2")
+    for _ in range(2):
+        call("POST", "/auth/refresh", json={"refresh_token": ""})
+    assert call("POST", "/auth/refresh", json={"refresh_token": ""}).status_code == 429
+    assert call("POST", "/auth/logout", json={"refresh_token": ""}).status_code == 422
+    assert call("POST", "/auth/login", json={"email": "invalido", "password": "x"}).status_code == 422
+
+
+def test_session_limit_defaults_are_generous_for_normal_use(isolated: None) -> None:
+    # Validação a cada hora e na abertura do app: dezenas de chamadas por minuto não devem ser recusadas.
+    statuses: list[int] = [call("POST", "/auth/refresh", json={"refresh_token": ""}).status_code
+                           for _ in range(100)]
+    assert 429 not in statuses
+    for _ in range(25):
+        limit_user("licencas_status", "usuario-normal")
+
+
+def test_user_limit_by_refresh_token_owner(isolated: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    from uuid import uuid4
+    monkeypatch.setenv("RATE_LIMIT_USER_REQUESTS", "2")
+    owner, other = create_refresh_token(uuid4()), create_refresh_token(uuid4())
+    limit_refresh_token_owner("auth_refresh", owner)
+    limit_refresh_token_owner("auth_refresh", create_refresh_token(uuid4()))
+    limit_refresh_token_owner("auth_refresh", owner)
+    with pytest.raises(TooManyRequests) as limited:
+        limit_refresh_token_owner("auth_refresh", owner)
+    assert int(limited.value.headers["Retry-After"]) >= 1
+    # Outro usuário, outra rota, token inválido ou forjado não gastam o limite deste usuário.
+    limit_refresh_token_owner("auth_refresh", other)
+    limit_refresh_token_owner("auth_logout", owner)
+    for invalid in ("lixo", "", owner[:-3] + "abc"):
+        for _ in range(5):
+            limit_refresh_token_owner("auth_refresh", invalid)
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
+    limit_refresh_token_owner("auth_refresh", owner)
+    limit_user("licencas_status", "qualquer")
 
 
 def test_registration_ip_limit_is_stricter_and_longer(isolated: None) -> None:
