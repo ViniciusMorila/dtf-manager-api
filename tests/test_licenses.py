@@ -41,6 +41,7 @@ from app.modules.licenses.service import redeem_key
 from app.modules.users.models import User, UserRole
 from app.modules.users.schemas.input import UserCreate
 from app.shared.exceptions.license import InvalidActivationKey, TrialAlreadyUsed
+from app.shared.security.password import hash_password
 from app.shared.utils.calendar import add_calendar_months
 from scripts.backfill_licenses import backfill_licenses
 from scripts.seed_admin import PromotionRefused, seed_admin
@@ -680,3 +681,44 @@ def test_block_and_reset_revoke_sessions(api: Api, admin: Account, action: str) 
     assert api.request("POST", f"/admin/licencas/{license_id}/{action}", token=admin.token).status_code == 200
     response: Response = refresh(api, token, account.machine)
     assert response.status_code == 401 and error_code(response) == "INVALID_REFRESH_TOKEN"
+
+
+# --- Deploy em banco populado ---------------------------------------------------------------
+
+def test_backfill_verification_flags_accounts_without_license(api: Api, db: Session,
+                                                              monkeypatch: pytest.MonkeyPatch,
+                                                              capsys: pytest.CaptureFixture[str]) -> None:
+    """Contas antigas sem licença não fazem login; --verificar acusa até o backfill rodar."""
+    import scripts.backfill_licenses as backfill_module
+
+    settle(db)
+    password: str = secrets.token_urlsafe(12) + "a1"
+    with db.begin():
+        legacy: User = User(name="Antigo", email=f"{uuid4().hex}@example.com",
+                            password_hash=hash_password(password), cpf=None)
+        db.add(legacy)
+    old = Account(email=legacy.email, password=password, phone="", machine=random_machine())
+    refused: Response = api.login(old)
+    assert refused.status_code == 404 and error_code(refused) == "LICENCA_NAO_ENCONTRADA"
+
+    class BoundSession:
+        """main() abre a própria sessão; aqui ela é a sessão revertida do teste."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> Session:
+            settle(db)
+            return db
+
+        def __exit__(self, *exc: object) -> None:
+            settle(db)
+
+    monkeypatch.setattr(backfill_module, "Session", BoundSession)
+    assert backfill_module.main(["--verificar"]) == backfill_module.PENDING_EXIT_CODE
+    assert legacy.email in capsys.readouterr().out
+    assert db.scalar(select(License.id).where(License.user_id == legacy.id)) is None
+    assert backfill_module.main(["--aplicar"]) == 0
+    assert backfill_module.main(["--verificar"]) == 0
+    assert "OK" in capsys.readouterr().out
+    assert api.login(old).status_code == 200

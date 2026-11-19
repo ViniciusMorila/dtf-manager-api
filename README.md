@@ -689,10 +689,33 @@ conferência logo após o deploy, antes de liberar o app para os clientes.
    `bucket=<seu IP>`. Em seguida, volte `RATE_LIMIT_DIAGNOSTICS=false`: esse
    diagnóstico grava IPs, que são dados pessoais.
 
+### Ordem obrigatória do deploy desta etapa
+
+Num banco que já tem usuários, o código novo recusa o login de **todas** as contas
+sem licença (`LICENCA_NAO_ENCONTRADA`), inclusive a sua, até o backfill e o seed do
+administrador rodarem. Clientes antigos do app também passam a receber 422, porque
+o cadastro agora exige `telefone` e `id_maquina` e o login e o refresh exigem
+`id_maquina`. Faça tudo na mesma janela de manutenção, nesta ordem:
+
+1. **Backup:** `pg_dump "$DATABASE_URL" -Fc -f antes_licencas.dump` (de uma máquina
+   com acesso ao banco).
+2. **Deploy** do código desta branch. O comando `railway ssh` abre o container da
+   versão publicada, e só a versão nova contém a migration `0003`. Entre este passo
+   e o seguinte, as rotas de licença respondem com erro.
+3. **Migration:** `alembic upgrade head` (comandos abaixo).
+4. **Administrador:** `python -m scripts.seed_admin` (seção "Administrador").
+5. **Contas antigas:** `python -m scripts.backfill_licenses` para ver a lista e,
+   depois de revisar, `--aplicar`.
+6. **Conferência:** `python -m scripts.backfill_licenses --verificar` precisa
+   terminar com `OK` (código de saída 0). O código 2 significa contas sem licença.
+7. **Proxy:** confira o `X-Forwarded-For` e ligue `RATE_LIMIT_TRUST_PROXY`
+   (seção "Conferir o proxy").
+8. Só então libere o app atualizado para os clientes.
+
 ### Migrations no Railway
 
-Execute no container do serviço da API (`railway ssh`), na raiz `/app`, antes ou
-logo após publicar o código desta etapa:
+Execute no container do serviço da API (`railway ssh`), na raiz `/app`, logo após
+publicar o código desta etapa:
 
 ```sh
 cd /app

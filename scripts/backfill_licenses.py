@@ -1,8 +1,10 @@
 """Licenças para contas antigas sem licença: python -m scripts.backfill_licenses.
 
 Opcional e separado da migration. Por padrão só SIMULA e lista o que faria;
-grava somente com --aplicar. Administradores recebem VITALICIO; os demais,
-TESTE de 7 dias a partir de agora. Sem telefone e sem máquina: a máquina é
+grava somente com --aplicar. Com --verificar, sai com código 2 se houver contas
+sem licença (checagem do deploy: essas contas não conseguem fazer login).
+
+Administradores recebem VITALICIO; os demais, TESTE de 7 dias a partir de agora. Sem telefone e sem máquina: a máquina é
 vinculada na primeira validação. Não cria registros em trial_usages (não há
 máquina/telefone conhecidos), portanto não consome a trava de teste.
 """
@@ -21,6 +23,8 @@ from app.db.session import get_engine
 from app.modules.licenses.models import License, LicensePlanCode, LicenseState
 from app.modules.licenses.rules import plan_end
 from app.modules.users.models import User, UserRole
+
+PENDING_EXIT_CODE: int = 2
 
 
 @dataclass(frozen=True)
@@ -57,7 +61,10 @@ def backfill_licenses(session: Session, *, apply: bool) -> list[BackfillItem]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Cria licença para usuários existentes sem licença.")
-    parser.add_argument("--aplicar", action="store_true", help="Grava no banco. Sem esta opção, apenas simula.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--aplicar", action="store_true", help="Grava no banco. Sem esta opção, apenas simula.")
+    mode.add_argument("--verificar", action="store_true",
+                      help="Não grava; sai com código 2 se alguma conta estiver sem licença.")
     args = parser.parse_args(argv)
     load_models()
     try:
@@ -68,6 +75,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     for item in items:
         print(f"  {item.email}: {item.plan}")
+    if args.verificar:
+        if items:
+            print(f"PENDENTE: {len(items)} conta(s) sem licença não conseguem fazer login. "
+                  "Revise a lista e rode com --aplicar.")
+            return PENDING_EXIT_CODE
+        print("OK: todas as contas têm licença.")
+        return 0
     verb: str = "criada(s)" if args.aplicar else "seria(m) criada(s) — simulação, nada gravado; use --aplicar"
     print(f"{len(items)} licença(s) {verb}.")
     return 0
