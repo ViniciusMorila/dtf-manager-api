@@ -634,7 +634,7 @@ Contrato HTTP completo, códigos de erro e exemplos: [docs/API_LICENCAS.md](docs
 | `licenses` | Uma por usuário (`user_id` único): plano, status (`ATIVA`, `EXPIRADA`, `BLOQUEADA`), ativação, expiração (nula no vitalício), máquina, telefone (só dígitos), contador e data do último reset |
 | `activation_keys` | Digest SHA-256 da chave (a chave completa só é exibida na geração), últimos 4 caracteres, plano, status (`DISPONIVEL`, `USADA`, `CANCELADA`), cliente, licença e datas |
 | `trial_usages` | Máquina e telefone que já usaram teste, ambos únicos; `user_id` vira nulo se a conta for apagada, mantendo a trava |
-| `license_resets` | Histórico de resets: licença, máquina anterior, administrador, se foi forçado e data |
+| `license_resets` | Histórico de resets: licença, cópia do e-mail da conta, máquina anterior, administrador, se foi forçado e data. Se a conta for apagada, o histórico fica (a licença vira nula) |
 
 Um índice único parcial impede duas licenças `ATIVA` de contas diferentes na
 mesma máquina. `users.role` (`USER`/`ADMIN`) define o perfil; o cadastro público
@@ -767,6 +767,13 @@ Confirme que a conta é sua e rode
 a ser `ADMIN_SENHA` e todas as sessões da conta são revogadas.
 
 Depois, acesse `https://SEU-DOMINIO/admin`.
+
+**Não use a conta de administrador no aplicativo DTF.** Ela nunca é recusada por
+licença (nem bloqueada), não fica presa a nenhuma máquina e entra sem `id_maquina`.
+Quem souber essa senha tem, na prática, uma licença vitalícia em quantos PCs quiser,
+além do acesso ao painel. Use-a só no painel `/admin`, com uma senha exclusiva, e
+crie uma conta comum (com chave `VITALICIO`, se quiser) para usar o app. Não há
+autenticação em dois fatores.
 Remova `ADMIN_SENHA` das variáveis após o uso: ela não é lida pelas rotas.
 
 ### Contas antigas sem licença (opcional)

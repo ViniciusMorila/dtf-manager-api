@@ -180,7 +180,8 @@ valendo até expirar (15 minutos). A sessão fica associada ao `id_maquina` do l
 - `AUTHENTICATION_FAILED` (500)
 
 Contas de administrador não precisam de `id_maquina` e nunca são recusadas por
-licença.
+licença. Por isso a conta admin deve ser usada só no painel `/admin`, nunca no
+aplicativo.
 
 ### `GET /licencas/status` (Bearer)
 
