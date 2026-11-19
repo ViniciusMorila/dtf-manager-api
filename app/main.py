@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
+from app.core.access_log import install_access_log_redaction
 from app.core.config import Settings
 from app.core.health import router as health_router
 from app.db.base import load_models
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
     """Valida as configurações antes de criar a aplicação ASGI."""
     settings: Settings = Settings()
     load_models()
+    install_access_log_redaction()
     application: FastAPI = FastAPI(title=settings.app_name)
     application.include_router(health_router)
     application.include_router(auth_router)

@@ -12,6 +12,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy.orm import Session
 
+from app.core.access_log import RedactAdminQueryFilter
 from app.db.session import get_session
 from app.main import create_app
 from app.modules.licenses.models import License, LicensePlanCode, LicenseState
@@ -266,3 +267,29 @@ def test_admin_panel_is_static_with_nonce_csp(isolated: None) -> None:
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     assert "innerHTML" not in response.text
     assert call("GET", "/admin").headers["content-security-policy"] != response.headers["content-security-policy"]
+
+
+def access_record(path: str) -> logging.LogRecord:
+    return logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+                             ("200.1.2.3:5000", "GET", path, "1.1", 200), None)
+
+
+@pytest.mark.parametrize(("path", "expected"), [
+    ("/admin/licencas?busca=Maria%20Silva&status=ATIVA", "/admin/licencas?[omitido]"),
+    ("/admin/chaves?busca=11912345678", "/admin/chaves?[omitido]"),
+    ("/admin/licencas", "/admin/licencas"),
+    ("/licencas/status", "/licencas/status"),
+    ("/payments/x?type=payment", "/payments/x?type=payment"),
+])
+def test_access_log_redacts_admin_query(path: str, expected: str) -> None:
+    record: logging.LogRecord = access_record(path)
+    assert RedactAdminQueryFilter().filter(record) is True
+    assert record.getMessage() == f'200.1.2.3:5000 - "GET {expected} HTTP/1.1" 200'
+    assert "Maria" not in record.getMessage() and "11912345678" not in record.getMessage()
+
+
+def test_create_app_installs_redaction_once(isolated: None) -> None:
+    create_app()
+    create_app()
+    filters = [item for item in logging.getLogger("uvicorn.access").filters if isinstance(item, RedactAdminQueryFilter)]
+    assert len(filters) == 1
