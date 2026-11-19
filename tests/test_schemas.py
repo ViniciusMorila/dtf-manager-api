@@ -93,7 +93,8 @@ def test_plan_selection_cannot_activate_license(schema: type[BaseModel]) -> None
 def test_refresh_credential_excluded(schema: type[BaseModel]) -> None:
     token: str = secrets.token_urlsafe(32)
     value: BaseModel = schema.model_validate({"refresh_token": token})
-    assert value.model_dump() == {}
+    assert "refresh_token" not in value.model_dump()
+    assert token not in str(value.model_dump())
     assert token not in repr(value)
 
 

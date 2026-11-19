@@ -1,6 +1,7 @@
 """Regras puras de licença, telefone, chave, rate limit e página admin (sem banco)."""
 
 import asyncio
+import logging
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -235,6 +236,8 @@ def test_account_limit_blocks_and_records_separately() -> None:
 def test_rate_limit_diagnostics_log(isolated: None, monkeypatch: pytest.MonkeyPatch,
                                     caplog: pytest.LogCaptureFixture) -> None:
     monkeypatch.setenv("RATE_LIMIT_DIAGNOSTICS", "true")
+    # alembic/env.py usa fileConfig, que desativa loggers existentes quando test_db.py roda antes.
+    monkeypatch.setattr(logging.getLogger("app.shared.security.rate_limit"), "disabled", False)
     with caplog.at_level("WARNING", logger="app.shared.security.rate_limit"):
         call("POST", "/auth/login", json={"email": "invalido", "password": "senha-secreta-1"},
              headers=[("X-Forwarded-For", "7.7.7.7"), ("X-Forwarded-For", "200.1.2.3")])
