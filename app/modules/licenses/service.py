@@ -50,6 +50,7 @@ from app.shared.exceptions.license import (
     TrialAlreadyUsed,
 )
 from app.shared.security.activation_key import (
+    activation_key_secret,
     hash_activation_key,
     normalize_activation_key,
 )
@@ -205,6 +206,10 @@ def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
     key: str | None = normalize_activation_key(raw_key)
     if key is None:
         raise InvalidActivationKey()
+    try:
+        digest: str = hash_activation_key(key, activation_key_secret())
+    except ValueError:
+        raise LicenseError() from None
     now: datetime = utc_now()
     try:
         with session.begin():
@@ -228,7 +233,7 @@ def redeem_key(session: Session, *, user_id: UUID, is_admin: bool, raw_key: str,
                 if license.plan == LicensePlanCode.VITALICIO and is_currently_valid(license, now):
                     raise LicenseAlreadyLifetime()
             activation: ActivationKey | None = session.scalar(
-                select(ActivationKey).where(ActivationKey.key_hash == hash_activation_key(key))
+                select(ActivationKey).where(ActivationKey.key_hash == digest)
                 .with_for_update().execution_options(populate_existing=True),
             )
             if activation is None or activation.status != ActivationKeyStatus.DISPONIVEL:

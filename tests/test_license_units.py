@@ -72,7 +72,8 @@ def test_activation_key_format_entropy_and_normalization() -> None:
     for key in keys:
         assert re.fullmatch(rf"[{ALPHABET}]{{4}}(-[{ALPHABET}]{{4}}){{3}}", key)
         assert normalize_activation_key(key.lower().replace("-", " ")) == key
-        assert hash_activation_key(key) != key and len(hash_activation_key(key)) == 64
+        digest: str = hash_activation_key(key, "a" * 32)
+        assert digest != key and len(digest) == 64 and digest != hash_activation_key(key, "b" * 32)
     for invalid in ("", "ABCD-EFGH", "ABCD-EFGH-JKMN-PQR0", "ABCD-EFGH-JKMN-PQRS-TVWX", "ABCD_EFGH_JKMN_PQRS"):
         assert normalize_activation_key(invalid) is None
 

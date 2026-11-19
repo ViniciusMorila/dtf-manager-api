@@ -46,6 +46,7 @@ from app.shared.exceptions.license import (
     ResetLimitReached,
 )
 from app.shared.security.activation_key import (
+    activation_key_secret,
     generate_activation_key,
     hash_activation_key,
     mask_activation_key,
@@ -95,10 +96,15 @@ def _run[T](session: Session, operation: Callable[[], T]) -> T:
 
 
 def generate_key(session: Session, *, admin_id: UUID, data: GerarChaveRequest) -> ChaveGerada:
+    try:
+        secret: str = activation_key_secret()
+    except ValueError:
+        raise LicenseError() from None
+
     def operation() -> ChaveGerada:
         key: str = generate_activation_key()
         row: ActivationKey = ActivationKey(
-            key_hash=hash_activation_key(key), key_suffix=key[-4:], plan=data.plano,
+            key_hash=hash_activation_key(key, secret), key_suffix=key[-4:], plan=data.plano,
             status=ActivationKeyStatus.DISPONIVEL, customer_name=data.nome_cliente,
             customer_contact=data.contato_cliente, created_by=admin_id,
         )

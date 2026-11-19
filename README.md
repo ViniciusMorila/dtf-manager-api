@@ -150,6 +150,11 @@ Em **Variables**, forneça externamente a configuração existente:
 - `ENVIRONMENT=production`.
 - `JWT_ACCESS_SECRET` e `JWT_REFRESH_SECRET`: valores aleatórios, distintos e
   seguros conforme a validação descrita abaixo. Não copie os placeholders.
+- `ACTIVATION_KEY_SECRET`: pepper do HMAC das chaves de ativação, com as mesmas
+  regras e diferente dos dois secrets JWT. **Obrigatório em production**: sem ele a
+  API não inicia. Gere com `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+  e guarde uma cópia segura: perder ou trocar o valor invalida todas as chaves já
+  geradas e ainda não usadas (licenças já ativadas não são afetadas).
 - `DATABASE_URL`: URL do PostgreSQL acessível pelo backend. São aceitos
   `postgresql://` (Railway) e `postgresql+psycopg://`. A API, o Alembic e o seed
   normalizam apenas o driver para psycopg 3, preservando os demais componentes e parâmetros.

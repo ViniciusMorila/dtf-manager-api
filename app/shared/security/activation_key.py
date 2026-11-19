@@ -1,8 +1,11 @@
 """Chaves de ativação XXXX-XXXX-XXXX-XXXX geradas com o módulo secrets."""
 
+import hmac
 import re
 import secrets
 from hashlib import sha256
+
+from app.core.config import Settings
 
 # Sem 0/O, 1/I/L e U para evitar confusão na digitação: 30 símbolos, ~78 bits por chave.
 ALPHABET: str = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
@@ -28,9 +31,17 @@ def normalize_activation_key(value: str) -> str | None:
     return format_activation_key(compact)
 
 
-def hash_activation_key(key: str) -> str:
-    """Digest SHA-256 da forma normalizada; somente ele é persistido."""
-    return sha256(key.encode("utf-8")).hexdigest()
+def activation_key_secret(settings: Settings | None = None) -> str:
+    """ValueError se ACTIVATION_KEY_SECRET estiver ausente ou fraco (nunca expõe o valor)."""
+    return (settings or Settings()).validate_activation_key_secret()
+
+
+def hash_activation_key(key: str, secret: str) -> str:
+    """HMAC-SHA256 da forma normalizada com o pepper do servidor; somente ele é persistido.
+
+    Um vazamento do banco não permite testar chaves sem o segredo, que fica fora do banco.
+    """
+    return hmac.new(secret.encode("utf-8"), key.encode("utf-8"), sha256).hexdigest()
 
 
 def mask_activation_key(suffix: str) -> str:

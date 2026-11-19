@@ -6,11 +6,14 @@ dados reais e só rodam quando o nome do banco contém "test".
 """
 
 import asyncio
+import hmac
+import os
 import secrets
 import threading
 from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -57,6 +60,7 @@ def environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ENVIRONMENT", "testing")
     monkeypatch.setenv("JWT_ACCESS_SECRET", secrets.token_hex(32))
     monkeypatch.setenv("JWT_REFRESH_SECRET", secrets.token_hex(32))
+    monkeypatch.setenv("ACTIVATION_KEY_SECRET", secrets.token_hex(32))
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
 
 
@@ -318,6 +322,9 @@ def test_valid_key_renews_valid_license_from_current_expiration(api: Api, admin:
     stored: ActivationKey = api.session.scalars(select(ActivationKey).where(ActivationKey.license_id == license.id)).one()
     assert stored.status == ActivationKeyStatus.USADA and stored.used_at is not None
     assert key not in (stored.key_hash, stored.key_suffix)
+    # O digest é HMAC com o pepper: sem o segredo, a chave não pode ser testada contra o banco.
+    assert stored.key_hash != sha256(key.encode()).hexdigest()
+    assert stored.key_hash == hmac.new(os.environ["ACTIVATION_KEY_SECRET"].encode(), key.encode(), sha256).hexdigest()
 
 
 def test_key_on_expired_license_counts_from_now_using_password(api: Api, admin: Account) -> None:
@@ -822,3 +829,18 @@ def test_license_state_errors_do_not_reveal_whether_key_is_valid(api: Api, admin
     # Nenhuma das tentativas consumiu a chave válida.
     available = api.request("GET", "/admin/chaves?status=DISPONIVEL&limite=200", token=admin.token).json()["itens"]
     assert any(item["chave_mascarada"].endswith(valid_key[-4:]) for item in available)
+
+
+def test_key_operations_fail_closed_without_pepper(api: Api, admin: Account, monkeypatch: pytest.MonkeyPatch) -> None:
+    key: str = new_key(api, admin, "MENSAL")
+    account, _ = api.register()
+    api.login(account)
+    monkeypatch.delenv("ACTIVATION_KEY_SECRET")
+    for response in (api.activate(account, key),
+                     api.request("POST", "/admin/chaves", token=admin.token, json={
+                         "plano": "MENSAL", "nome_cliente": "x", "contato_cliente": "y"})):
+        assert response.status_code == 503 and error_code(response) == "LICENCA_INDISPONIVEL"
+        assert "ACTIVATION_KEY_SECRET" not in response.text
+    # Com outro pepper, a mesma chave deixa de corresponder.
+    monkeypatch.setenv("ACTIVATION_KEY_SECRET", secrets.token_hex(32))
+    assert error_code(api.activate(account, key)) == "CHAVE_INVALIDA"

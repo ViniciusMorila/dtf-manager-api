@@ -394,6 +394,7 @@ o cabeçalho `Retry-After` (em segundos). O app deve mostrar a mensagem e aguard
 | `RATE_LIMIT_ACCOUNT_WINDOW_SECONDS` | `900` | Janela das senhas erradas, em segundos |
 | `RATE_LIMIT_TRUST_PROXY` | `false` | Usa o último valor de `X-Forwarded-For` como IP. Ligue só depois de conferir o proxy (veja o README) |
 | `RATE_LIMIT_DIAGNOSTICS` | `false` | Registra temporariamente `X-Forwarded-For` e o IP escolhido nos logs (contém IPs) |
+| `ACTIVATION_KEY_SECRET` | — | **Obrigatória em production.** Pepper do HMAC das chaves (32+ caracteres, diferente dos secrets JWT). Trocar o valor invalida as chaves ainda não usadas. Sem ela, gerar ou ativar chave responde `LICENCA_INDISPONIVEL` (503) |
 | `ADMIN_EMAIL` | — | Somente para `scripts/seed_admin.py` |
 | `ADMIN_SENHA` | — | Somente para `scripts/seed_admin.py`; não é lida pelas rotas |
 | `ADMIN_NOME` | `Administrador` | Nome do administrador ao criar a conta |

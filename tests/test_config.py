@@ -27,6 +27,7 @@ def production_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("JWT_ACCESS_SECRET", secrets.token_hex(32))
     monkeypatch.setenv("JWT_REFRESH_SECRET", secrets.token_hex(32))
+    monkeypatch.setenv("ACTIVATION_KEY_SECRET", secrets.token_hex(32))
 
 
 def test_development_defaults() -> None:
@@ -100,6 +101,19 @@ def test_production_rejects_unsafe_secrets(
         Settings()
 
 
+@pytest.mark.parametrize("value", [None, "trocar", "a" * 64, "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"])
+def test_production_requires_independent_activation_key_secret(
+    monkeypatch: pytest.MonkeyPatch, value: str | None,
+) -> None:
+    production_environment(monkeypatch)
+    if value is None:
+        monkeypatch.delenv("ACTIVATION_KEY_SECRET")
+    else:
+        monkeypatch.setenv("ACTIVATION_KEY_SECRET", os.environ.get(value, value))
+    with pytest.raises(ValidationError, match="ACTIVATION_KEY_SECRET"):
+        Settings()
+
+
 def test_production_rejects_reused_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     production_environment(monkeypatch)
     monkeypatch.setenv("JWT_REFRESH_SECRET", os.environ["JWT_ACCESS_SECRET"])
@@ -111,7 +125,7 @@ def test_production_accepts_generated_secrets_and_masks_values(monkeypatch: pyte
     production_environment(monkeypatch)
     settings: Settings = Settings()
     assert settings.environment == "production"
-    for name in ("JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"):
+    for name in ("JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET", "ACTIVATION_KEY_SECRET"):
         assert os.environ[name] not in repr(settings)
         assert os.environ[name] not in settings.model_dump_json()
 
