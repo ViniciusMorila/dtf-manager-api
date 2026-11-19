@@ -125,12 +125,16 @@ class TrialUsage(UUIDPrimaryKey, CreatedAt, Base):
 
 
 class LicenseReset(UUIDPrimaryKey, CreatedAt, Base):
+    """Auditoria de resets; sobrevive à exclusão da conta (license_id vira nulo, e-mail fica)."""
+
     __tablename__ = "license_resets"
     __table_args__ = (Index("ix_license_resets_license_created", "license_id", "created_at"),)
 
-    license_id: Mapped[UUID] = mapped_column(ForeignKey("licenses.id", ondelete="CASCADE"))
+    license_id: Mapped[UUID | None] = mapped_column(ForeignKey("licenses.id", ondelete="SET NULL"))
+    # Cópia do e-mail no momento do reset, para a auditoria continuar legível.
+    user_email: Mapped[str] = mapped_column(String(320))
     previous_machine_id: Mapped[str | None] = mapped_column(String(128))
     performed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     forced: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
-    license: Mapped[License] = relationship(back_populates="resets")
+    license: Mapped[License | None] = relationship(back_populates="resets")

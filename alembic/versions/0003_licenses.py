@@ -143,14 +143,15 @@ def upgrade() -> None:
 
     op.create_table(
         "license_resets",
-        sa.Column("license_id", sa.Uuid(), nullable=False),
+        sa.Column("license_id", sa.Uuid(), nullable=True),
+        sa.Column("user_email", sa.String(length=320), nullable=False),
         sa.Column("previous_machine_id", sa.String(length=128), nullable=True),
         sa.Column("performed_by", sa.Uuid(), nullable=True),
         sa.Column("forced", sa.Boolean(), server_default=sa.text("false"), nullable=False),
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["license_id"], ["licenses.id"],
-                                name=op.f("fk_license_resets_license_id_licenses"), ondelete="CASCADE"),
+                                name=op.f("fk_license_resets_license_id_licenses"), ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["performed_by"], ["users.id"],
                                 name=op.f("fk_license_resets_performed_by_users"), ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_license_resets")),

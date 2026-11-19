@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.db.session import get_engine, get_session
 from app.main import create_app
+from app.modules.auth.models import RefreshToken
 from app.modules.auth.registration import register_user
 from app.modules.licenses import admin_service
 from app.modules.licenses.models import (
@@ -844,3 +845,20 @@ def test_key_operations_fail_closed_without_pepper(api: Api, admin: Account, mon
     # Com outro pepper, a mesma chave deixa de corresponder.
     monkeypatch.setenv("ACTIVATION_KEY_SECRET", secrets.token_hex(32))
     assert error_code(api.activate(account, key)) == "CHAVE_INVALIDA"
+
+
+def test_reset_history_survives_account_deletion(api: Api, admin: Account, db: Session) -> None:
+    account, _ = api.register()
+    api.login(account)
+    license_id: UUID = api.license_of(account).id
+    assert api.request("POST", f"/admin/licencas/{license_id}/resetar-maquina", token=admin.token).status_code == 200
+    settle(db)
+    with db.begin():
+        user_id = select(User.id).where(User.email == account.email).scalar_subquery()
+        db.execute(delete(RefreshToken).where(RefreshToken.user_id == user_id))
+        db.execute(delete(User).where(User.email == account.email))
+    db.expire_all()
+    history: LicenseReset = db.scalars(select(LicenseReset).where(LicenseReset.user_email == account.email)).one()
+    assert history.license_id is None
+    assert history.previous_machine_id == account.machine.lower()
+    assert history.performed_by == db.scalar(select(User.id).where(User.email == admin.email))

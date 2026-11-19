@@ -238,7 +238,8 @@ def reset_machine(session: Session, *, license_id: UUID, admin_id: UUID, force: 
         over_limit: bool = recent >= RESET_LIMIT
         if over_limit and not force:
             raise ResetLimitReached(extra={"resets_ultimos_12_meses": recent, "limite": RESET_LIMIT})
-        session.add(LicenseReset(license_id=license.id, previous_machine_id=license.machine_id,
+        session.add(LicenseReset(license_id=license.id, user_email=user.email,
+                                 previous_machine_id=license.machine_id,
                                  performed_by=admin_id, forced=over_limit, created_at=now))
         license.machine_id = None
         license.reset_count += 1
