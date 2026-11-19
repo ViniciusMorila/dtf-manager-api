@@ -4,6 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 
+from app.modules.licenses.schemas.contract import LicencaPublica
+from app.shared.schemas import UTCDateTime
+
 
 class TokenResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -19,3 +22,10 @@ class LogoutResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     status: Literal["ok"] = "ok"
+
+
+class LoginResponse(TokenResponse):
+    """Sessão e estado da licença no mesmo retorno, com a hora do servidor."""
+
+    licenca: LicencaPublica | None
+    servidor_agora: UTCDateTime

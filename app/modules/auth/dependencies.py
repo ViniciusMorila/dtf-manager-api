@@ -13,7 +13,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.db.session import SessionDependency
 from app.modules.subscriptions.schemas.license import LicenseStatus
 from app.modules.subscriptions.service import SubscriptionService
-from app.modules.users.models import User
+from app.modules.users.models import User, UserRole
+from app.shared.exceptions.api import AccessDenied
 from app.shared.exceptions.authentication import AccessUnavailable, InvalidAccessToken
 from app.shared.security.jwt import decode_access_token
 
@@ -25,6 +26,11 @@ class AuthenticatedUser:
     id: UUID
     name: str
     email: str
+    role: UserRole = UserRole.USER
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == UserRole.ADMIN
 
 
 def get_access_subject(
@@ -51,7 +57,8 @@ def get_current_user(
             )
             if user is None or not user.is_active:
                 raise InvalidAccessToken()
-            result: AuthenticatedUser = AuthenticatedUser(id=user.id, name=user.name, email=user.email)
+            result: AuthenticatedUser = AuthenticatedUser(id=user.id, name=user.name, email=user.email,
+                                                     role=user.role)
         return result
     except SQLAlchemyError:
         raise AccessUnavailable() from None
@@ -66,3 +73,13 @@ def get_current_license(user: CurrentUserDependency, session: SessionDependency)
 
 
 LicenseStatusDependency = Annotated[LicenseStatus, Depends(get_current_license)]
+
+
+def get_current_admin(user: CurrentUserDependency) -> AuthenticatedUser:
+    """Perfil lido do banco a cada requisição; o JWT não carrega papel."""
+    if not user.is_admin:
+        raise AccessDenied()
+    return user
+
+
+AdminDependency = Annotated[AuthenticatedUser, Depends(get_current_admin)]

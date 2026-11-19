@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict
 
+from app.modules.licenses.schemas.contract import LicencaPublica
 from app.modules.subscriptions.schemas.output import SubscriptionRead
 from app.modules.users.schemas.output import UserRead
 
@@ -10,7 +11,9 @@ class RegistrationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user: UserRead
-    subscription: SubscriptionRead
+    # Presente somente quando plan_code foi informado (fluxo de pagamento).
+    subscription: SubscriptionRead | None
+    licenca: LicencaPublica
 
 
 class ErrorDetail(BaseModel):
