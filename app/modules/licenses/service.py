@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -101,6 +102,11 @@ def bind_machine(session: Session, license: License, machine_id: str | None) -> 
         if in_use is not None:
             return MachineInUse()
         license.machine_id = machine_id
+        if license.plan == LicensePlanCode.TESTE:
+            # Uma máquina que recebe um teste fica travada para novos testes, mesmo sem telefone conhecido.
+            session.execute(pg_insert(TrialUsage).values(
+                machine_id=machine_id, phone=None, user_id=license.user_id,
+            ).on_conflict_do_nothing())
         return None
     if license.machine_id != machine_id:
         return MachineMismatch()

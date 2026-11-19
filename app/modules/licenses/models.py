@@ -111,12 +111,16 @@ class ActivationKey(UUIDPrimaryKey, CreatedAt, Base):
 
 
 class TrialUsage(UUIDPrimaryKey, CreatedAt, Base):
-    """Trava permanente do teste: sobrevive à exclusão da conta (user_id vira nulo)."""
+    """Trava permanente do teste: sobrevive à exclusão da conta (user_id vira nulo).
+
+    phone é nulo quando a máquina foi registrada ao vincular uma licença TESTE sem
+    telefone (contas antigas do backfill) ou uma máquina nova após reset.
+    """
 
     __tablename__ = "trial_usages"
 
     machine_id: Mapped[str] = mapped_column(String(128), unique=True)
-    phone: Mapped[str] = mapped_column(String(11), unique=True)
+    phone: Mapped[str | None] = mapped_column(String(11), unique=True)
     user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
 
 

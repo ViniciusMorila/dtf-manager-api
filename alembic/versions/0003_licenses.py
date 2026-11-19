@@ -98,7 +98,7 @@ def upgrade() -> None:
     op.create_table(
         "trial_usages",
         sa.Column("machine_id", sa.String(length=128), nullable=False),
-        sa.Column("phone", sa.String(length=11), nullable=False),
+        sa.Column("phone", sa.String(length=11), nullable=True),
         sa.Column("user_id", sa.Uuid(), nullable=True),
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),

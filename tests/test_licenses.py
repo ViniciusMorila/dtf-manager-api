@@ -722,3 +722,41 @@ def test_backfill_verification_flags_accounts_without_license(api: Api, db: Sess
     assert backfill_module.main(["--verificar"]) == 0
     assert "OK" in capsys.readouterr().out
     assert api.login(old).status_code == 200
+
+
+def test_backfilled_trial_locks_machine_on_first_binding(api: Api, db: Session) -> None:
+    """Conta antiga com TESTE do backfill: a máquina vinculada não recebe outro teste."""
+    settle(db)
+    password: str = secrets.token_urlsafe(12) + "a1"
+    with db.begin():
+        legacy: User = User(name="Antigo", email=f"{uuid4().hex}@example.com",
+                            password_hash=hash_password(password), cpf=None)
+        db.add(legacy)
+    backfill_licenses(db, apply=True)
+    old = Account(email=legacy.email, password=password, phone="", machine=random_machine())
+    assert api.login(old).status_code == 200
+    trial: TrialUsage = db.scalars(select(TrialUsage).where(TrialUsage.machine_id == old.machine.lower())).one()
+    assert trial.phone is None and trial.user_id == legacy.id
+    _, response = api.register(machine=old.machine)
+    assert response.status_code == 409 and error_code(response) == "TESTE_JA_UTILIZADO"
+
+
+def test_trial_rebound_after_reset_also_locks_new_machine(api: Api, admin: Account, db: Session) -> None:
+    account, _ = api.register()
+    api.login(account)
+    api.request("POST", f"/admin/licencas/{api.license_of(account).id}/resetar-maquina", token=admin.token)
+    account.machine = random_machine()
+    assert api.login(account).status_code == 200
+    _, response = api.register(machine=account.machine)
+    assert error_code(response) == "TESTE_JA_UTILIZADO"
+
+
+def test_paid_license_binding_does_not_record_trial(api: Api, admin: Account, db: Session) -> None:
+    account, _ = api.register()
+    api.login(account)
+    api.activate(account, new_key(api, admin, "ANUAL"))
+    api.request("POST", f"/admin/licencas/{api.license_of(account).id}/resetar-maquina", token=admin.token)
+    account.machine = random_machine()
+    assert api.login(account).status_code == 200
+    settle(db)
+    assert db.scalar(select(TrialUsage.id).where(TrialUsage.machine_id == account.machine.lower())) is None

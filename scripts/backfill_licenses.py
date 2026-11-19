@@ -4,9 +4,9 @@ Opcional e separado da migration. Por padrão só SIMULA e lista o que faria;
 grava somente com --aplicar. Com --verificar, sai com código 2 se houver contas
 sem licença (checagem do deploy: essas contas não conseguem fazer login).
 
-Administradores recebem VITALICIO; os demais, TESTE de 7 dias a partir de agora. Sem telefone e sem máquina: a máquina é
-vinculada na primeira validação. Não cria registros em trial_usages (não há
-máquina/telefone conhecidos), portanto não consome a trava de teste.
+Administradores recebem VITALICIO; os demais, TESTE de 7 dias a partir de agora.
+Sem telefone e sem máquina: a máquina é vinculada na primeira validação e, por
+ser um teste, entra em trial_usages nesse momento (não poderá receber outro teste).
 """
 
 import argparse
