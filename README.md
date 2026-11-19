@@ -672,9 +672,17 @@ do serviço, ou apenas na sessão do shell, e execute:
 /app/.venv/bin/python -m scripts.seed_admin
 ```
 
-O comando é idempotente. Ele cria a conta ou promove uma existente a `ADMIN`, com
-licença `VITALICIO`, `ATIVA` e sem trava de máquina. A senha de uma conta existente
-só é trocada com `--redefinir-senha`. Depois, acesse `https://SEU-DOMINIO/admin`.
+O comando é idempotente. Ele cria a conta `ADMIN` com licença `VITALICIO`, `ATIVA`
+e sem trava de máquina. Se a conta já é `ADMIN`, a senha só muda com
+`--redefinir-senha` (que também revoga as sessões abertas).
+
+Se `ADMIN_EMAIL` já pertencer a uma conta **comum**, o seed recusa. Como o cadastro
+é público, outra pessoa pode ter registrado esse e-mail antes e conheceria a senha.
+Confirme que a conta é sua e rode
+`python -m scripts.seed_admin --promover-existente --redefinir-senha`: a senha passa
+a ser `ADMIN_SENHA` e todas as sessões da conta são revogadas.
+
+Depois, acesse `https://SEU-DOMINIO/admin`.
 Remova `ADMIN_SENHA` das variáveis após o uso: ela não é lida pelas rotas.
 
 ### Contas antigas sem licença (opcional)

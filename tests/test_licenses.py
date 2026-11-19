@@ -43,7 +43,7 @@ from app.modules.users.schemas.input import UserCreate
 from app.shared.exceptions.license import InvalidActivationKey, TrialAlreadyUsed
 from app.shared.utils.calendar import add_calendar_months
 from scripts.backfill_licenses import backfill_licenses
-from scripts.seed_admin import seed_admin
+from scripts.seed_admin import PromotionRefused, seed_admin
 
 HEAD: str = "0003_licenses"
 
@@ -474,12 +474,30 @@ def test_admin_has_lifetime_license_without_machine_lock(api: Api, admin: Accoun
     assert not again.created and not again.password_updated and not again.license_created
 
 
-def test_seed_admin_promotes_existing_user_and_backfill(api: Api, db: Session) -> None:
-    account, _ = api.register()
+def test_seed_admin_refuses_to_promote_account_registered_by_someone_else(api: Api, db: Session) -> None:
+    """Quem cadastra o ADMIN_EMAIL antes do seed não pode virar admin com a própria senha."""
+    attacker, _ = api.register()
+    refresh_token: str = api.login(attacker).json()["refresh_token"]
+    admin_password: str = secrets.token_urlsafe(12) + "a1"
+    for flags in ({}, {"promote_existing": True}, {"reset_password": True}):
+        settle(db)
+        with pytest.raises(PromotionRefused):
+            seed_admin(db, email=attacker.email, password=admin_password, name="x", **flags)
+        settle(db)
+        assert db.scalar(select(User.role).where(User.email == attacker.email)) == UserRole.USER
     settle(db)
-    result = seed_admin(db, email=account.email, password=secrets.token_urlsafe(12) + "a1", name="x")
-    assert not result.created and not result.password_updated
-    assert api.license_of(account).plan == LicensePlanCode.VITALICIO
+    result = seed_admin(db, email=attacker.email, password=admin_password, name="x",
+                        promote_existing=True, reset_password=True)
+    assert result.promoted and result.password_updated and result.sessions_revoked == 1
+    assert api.license_of(attacker).plan == LicensePlanCode.VITALICIO
+    assert api.login(attacker, machine=None).status_code == 401
+    attacker.password = admin_password
+    assert api.login(attacker, machine=None).status_code == 200
+    stale: Response = api.request("POST", "/auth/refresh", json={"refresh_token": refresh_token})
+    assert stale.status_code == 401
+
+
+def test_backfill_creates_missing_licenses(api: Api, db: Session) -> None:
     settle(db)
     with db.begin():
         legacy: User = User(name="Antigo", email=f"{uuid4().hex}@example.com", password_hash="x", cpf=None)
