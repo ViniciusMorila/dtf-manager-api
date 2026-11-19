@@ -19,6 +19,7 @@ from app.core.config import Settings
 from app.db.session import get_engine, get_session
 from app.main import create_app
 from app.modules.auth.registration import register_user
+from app.modules.licenses.models import License, TrialUsage
 from app.modules.plans.models import Plan, PlanCode
 from app.modules.subscriptions.models import Subscription
 from app.modules.users.models import User
@@ -35,13 +36,15 @@ from scripts.seed_plans import seed_plans
 @pytest.fixture
 def payload() -> dict[str, str]:
     return {"name": " Ana ", "email": "ANA@EXAMPLE.COM", "cpf": "123.456.789-09",
-            "password": secrets.token_urlsafe(24) + "a1", "plan_code": "MONTHLY"}
+            "password": secrets.token_urlsafe(24) + "a1", "plan_code": "MONTHLY",
+            "telefone": "(11) 91234-5678", "id_maquina": "MAQUINA-ANA-0001"}
 
 
 @pytest.fixture
 def database_session() -> MagicMock:
     session: MagicMock = MagicMock(spec=Session)
-    session.scalar.side_effect = [None, None, Plan(id=uuid4(), code=PlanCode.MONTHLY, is_active=True)]
+    # email, CPF, plano, trava de teste (máquina/telefone) e máquina com licença ativa.
+    session.scalar.side_effect = [None, None, Plan(id=uuid4(), code=PlanCode.MONTHLY, is_active=True), None, None]
 
     def flush() -> None:
         for call in session.add.call_args_list:
@@ -73,7 +76,9 @@ def post_registration(payload: dict[str, str], session: Session) -> Response:
 def test_register_201_pending_and_no_credentials(payload: dict[str, str], database_session: MagicMock) -> None:
     response: Response = post_registration(payload, database_session)
     assert response.status_code == 201, response.text
-    assert set(response.json()) == {"user", "subscription"}
+    assert set(response.json()) == {"user", "subscription", "licenca"}
+    licenca = response.json()["licenca"]
+    assert licenca["plano"] == "TESTE" and licenca["status"] == "ATIVA" and licenca["dias_restantes"] == 7
     assert response.json()["user"]["name"] == "Ana"
     assert response.json()["user"]["email"] == "ana@example.com"
     subscription = response.json()["subscription"]
@@ -82,6 +87,10 @@ def test_register_201_pending_and_no_credentials(payload: dict[str, str], databa
         assert subscription[field] is None
     user: User = database_session.add.call_args_list[0].args[0]
     assert user.cpf == "12345678909"
+    trial: TrialUsage = database_session.add.call_args_list[1].args[0]
+    assert (trial.machine_id, trial.phone) == ("maquina-ana-0001", "11912345678")
+    license: License = database_session.add.call_args_list[2].args[0]
+    assert (license.machine_id, license.phone, license.plan) == ("maquina-ana-0001", "11912345678", "TESTE")
     assert verify_password(payload["password"], user.password_hash)
     assert payload["password"] not in response.text
     assert user.password_hash not in response.text
@@ -96,6 +105,9 @@ def test_register_201_pending_and_no_credentials(payload: dict[str, str], databa
     ("cpf", "12345678909a", "INVALID_CPF"), ("password", "short1", "WEAK_PASSWORD"),
     ("password", "abcdefgh", "WEAK_PASSWORD"), ("password", "12345678", "WEAK_PASSWORD"),
     ("plan_code", "UNKNOWN", "INVALID_PLAN"), ("status", "ACTIVE", "VALIDATION_ERROR"),
+    ("telefone", "1234", "TELEFONE_INVALIDO"), ("telefone", "(11) 81234-5678", "TELEFONE_INVALIDO"),
+    ("telefone", "(20) 91234-5678", "TELEFONE_INVALIDO"), ("telefone", "11 9123a-5678", "TELEFONE_INVALIDO"),
+    ("id_maquina", "curto", "ID_MAQUINA_INVALIDO"), ("id_maquina", "maquina com espaco", "ID_MAQUINA_INVALIDO"),
 ])
 def test_invalid_inputs_never_write(
     payload: dict[str, str], database_session: MagicMock, field: str, value: str, code: str,
@@ -151,7 +163,7 @@ def test_subscription_failure_exits_transaction_with_error(payload: dict[str, st
     original_flush = database_session.flush.side_effect
 
     def fail_second_flush() -> None:
-        if database_session.add.call_count == 2:
+        if database_session.add.call_count == 4:
             raise SQLAlchemyError("internal database detail")
         original_flush()
 
@@ -187,7 +199,8 @@ def fresh_registration() -> UserCreate:
         remainder: int = sum(int(digits[index]) * (size + 1 - index) for index in range(size)) % 11
         digits += str(0 if remainder < 2 else 11 - remainder)
     return UserCreate(name="Cadastro teste", cpf=digits, email=f"{uuid4().hex}@example.com",
-                      password=secrets.token_urlsafe(24) + "a1", plan_code=PlanCode.MONTHLY)
+                      password=secrets.token_urlsafe(24) + "a1", plan_code=PlanCode.MONTHLY,
+                      phone=f"119{secrets.randbelow(10**8):08d}", machine_id=uuid4().hex)
 
 
 def test_real_postgresql_registration(real_session: Session) -> None:

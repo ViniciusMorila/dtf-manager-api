@@ -3,18 +3,24 @@
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
+from app.core.access_log import install_access_log_redaction
 from app.core.config import Settings
 from app.core.health import router as health_router
 from app.db.base import load_models
+from app.modules.admin.panel import router as admin_panel_router
+from app.modules.admin.routes import router as admin_router
 from app.modules.auth.routes import router as auth_router
+from app.modules.licenses.routes import licencas_router
 from app.modules.licenses.routes import router as license_router
 from app.modules.payments.routes import checkout_router
 from app.modules.payments.routes import router as payments_router
 from app.modules.plans.routes import router as plans_router
 from app.modules.subscriptions.service import LicenseStatusUnavailable
 from app.modules.users.routes import router as users_router
+from app.shared.exceptions.api import ApiError
 from app.shared.exceptions.authentication import AuthenticationError
 from app.shared.exceptions.handlers import (
+    api_error_handler,
     authentication_error_handler,
     license_error_handler,
     registration_error_handler,
@@ -27,6 +33,7 @@ def create_app() -> FastAPI:
     """Valida as configurações antes de criar a aplicação ASGI."""
     settings: Settings = Settings()
     load_models()
+    install_access_log_redaction()
     application: FastAPI = FastAPI(title=settings.app_name)
     application.include_router(health_router)
     application.include_router(auth_router)
@@ -35,7 +42,11 @@ def create_app() -> FastAPI:
     application.include_router(payments_router)
     application.include_router(checkout_router)
     application.include_router(plans_router)
+    application.include_router(licencas_router)
+    application.include_router(admin_router)
+    application.include_router(admin_panel_router)
     application.add_exception_handler(RegistrationError, registration_error_handler)
+    application.add_exception_handler(ApiError, api_error_handler)
     application.add_exception_handler(AuthenticationError, authentication_error_handler)
     application.add_exception_handler(LicenseStatusUnavailable, license_error_handler)
     application.add_exception_handler(RequestValidationError, validation_error_handler)

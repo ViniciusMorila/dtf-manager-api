@@ -417,6 +417,7 @@ def test_production_rejects_partial_payment_configuration(monkeypatch: pytest.Mo
         Settings(_env_file=None, environment="production",
             jwt_access_secret=SecretStr(secrets.token_urlsafe(40)),
             jwt_refresh_secret=SecretStr(secrets.token_urlsafe(40)),
+            activation_key_secret=SecretStr(secrets.token_urlsafe(40)),
             mercado_pago_environment="production")
 
 

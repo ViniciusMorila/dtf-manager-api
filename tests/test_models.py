@@ -12,6 +12,7 @@ from app.core.config import Settings
 from app.db.base import Base, load_models
 from app.db.session import get_engine
 from app.modules.auth.models import RefreshToken
+from app.modules.licenses.models import ActivationKey
 from app.modules.payments.models import Payment, PaymentStatus
 from app.modules.plans.models import Plan, PlanCode
 from app.modules.subscriptions.models import Subscription, SubscriptionStatus
@@ -21,7 +22,8 @@ load_models()
 
 
 def test_columns_types_and_nullability() -> None:
-    assert set(Base.metadata.tables) == {"users", "plans", "subscriptions", "payments", "refresh_tokens"}
+    assert set(Base.metadata.tables) == {"users", "plans", "subscriptions", "payments", "refresh_tokens",
+                                         "licenses", "activation_keys", "trial_usages", "license_resets"}
     for table in Base.metadata.tables.values():
         assert list(table.primary_key.columns.keys()) == ["id"]
         assert isinstance(table.c.id.type, Uuid)
@@ -52,13 +54,21 @@ def test_unique_constraints_and_foreign_key_indexes() -> None:
         }
 
     assert {("cpf",), ("email",)} <= unique_columns("users")
+    assert User.__table__.c.cpf.nullable
+    assert ("user_id",) in unique_columns("licenses")
+    assert ("key_hash",) in unique_columns("activation_keys")
+    assert {("machine_id",), ("phone",)} <= unique_columns("trial_usages")
+    assert "key" not in ActivationKey.__table__.c
     assert ("code",) in unique_columns("plans")
     assert ("token_hash",) in unique_columns("refresh_tokens")
     assert ("provider", "provider_payment_id") in unique_columns("payments")
     assert Payment.__table__.c.provider_payment_id.nullable
     for table in Base.metadata.tables.values():
         for foreign_key in table.foreign_keys:
-            assert any(next(iter(index.columns)) is foreign_key.parent for index in table.indexes)
+            # Constraints únicas também criam índice no PostgreSQL (ex.: licenses.user_id).
+            assert any(next(iter(index.columns)) is foreign_key.parent for index in table.indexes) or any(
+                isinstance(constraint, UniqueConstraint) and next(iter(constraint.columns)) is foreign_key.parent
+                for constraint in table.constraints)
 
 
 def test_enum_values_and_pending_defaults() -> None:
@@ -94,7 +104,7 @@ def test_migrated_postgresql_schema() -> None:
         context: MigrationContext = MigrationContext.configure(
             connection, opts={"compare_type": True, "compare_server_default": True},
         )
-        assert context.get_current_revision() == "0002_plan_price"
+        assert context.get_current_revision() == "0003_licenses"
         assert compare_metadata(context, Base.metadata) == []
         inspector = inspect(connection)
         for table in Base.metadata.tables.values():

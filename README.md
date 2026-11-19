@@ -1,5 +1,12 @@
 # API DTF Manager
 
+Etapa 19: licenças do aplicativo desktop. O cadastro cria um teste de 7 dias
+preso à máquina e ao telefone, o login valida licença, expiração e máquina, e
+chaves de ativação de uso único aplicam os planos `MENSAL`, `SEMESTRAL`, `ANUAL`
+e `VITALICIO`. O administrador tem rotas e um painel em `/admin`. O contrato
+completo para a integração do DTF está em [docs/API_LICENCAS.md](docs/API_LICENCAS.md);
+veja também a seção [Licenças do aplicativo — etapa 19](#licenças-do-aplicativo--etapa-19).
+
 Para diagnosticar assinaturas de Webhooks, distinguir IPN e recuperar um pagamento
 já aprovado sem nova cobrança, consulte o [procedimento operacional](docs/mercado_pago.md#auditoria-de-assinatura-e-recuperação).
 
@@ -143,6 +150,11 @@ Em **Variables**, forneça externamente a configuração existente:
 - `ENVIRONMENT=production`.
 - `JWT_ACCESS_SECRET` e `JWT_REFRESH_SECRET`: valores aleatórios, distintos e
   seguros conforme a validação descrita abaixo. Não copie os placeholders.
+- `ACTIVATION_KEY_SECRET`: pepper do HMAC das chaves de ativação, com as mesmas
+  regras e diferente dos dois secrets JWT. **Obrigatório em production**: sem ele a
+  API não inicia. Gere com `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+  e guarde uma cópia segura: perder ou trocar o valor invalida todas as chaves já
+  geradas e ainda não usadas (licenças já ativadas não são afetadas).
 - `DATABASE_URL`: URL do PostgreSQL acessível pelo backend. São aceitos
   `postgresql://` (Railway) e `postgresql+psycopg://`. A API, o Alembic e o seed
   normalizam apenas o driver para psycopg 3, preservando os demais componentes e parâmetros.
@@ -233,10 +245,12 @@ cd /app
 /app/.venv/bin/python -m alembic current
 ```
 
-A revisão esperada é `0002_plan_price (head)`. A sequência existente é
-`base → 0001_initial_schema → 0002_plan_price`. Em um PostgreSQL vazio, cria
+A revisão esperada é `0003_licenses (head)`. A sequência existente é
+`base → 0001_initial_schema → 0002_plan_price → 0003_licenses`. Em um PostgreSQL vazio, cria
 `plans`, `users`, `refresh_tokens`, `subscriptions`, `payments` e a tabela de
 controle `alembic_version`, incluindo enums, constraints, índices e `plans.price`.
+A `0003_licenses` adiciona `users.role`, torna `users.cpf` opcional e cria
+`licenses`, `activation_keys`, `trial_usages` e `license_resets`, sem apagar dados.
 Essa conclusão foi revisada no código e no SQL offline; não representa execução
 ou inspeção do banco de produção. Nenhuma migration é executada pelo start.
 
@@ -611,9 +625,186 @@ Os métodos públicos de PaymentService recebem uma sessão sem transação já 
 
 Os testes cobrem duplicidades, dinheiro, vínculo com a assinatura, atualizações, aprovação repetida e falha na ativação. Os testes PostgreSQL verificam aprovação/ativação persistidas e rollback conjunto; sem `DATABASE_URL`, são ignorados. Nenhum schema de banco ou migration foi alterado.
 
+## Licenças do aplicativo — etapa 19
+
+Contrato HTTP completo, códigos de erro e exemplos: [docs/API_LICENCAS.md](docs/API_LICENCAS.md).
+
+| Tabela | Conteúdo |
+| --- | --- |
+| `licenses` | Uma por usuário (`user_id` único): plano, status (`ATIVA`, `EXPIRADA`, `BLOQUEADA`), ativação, expiração (nula no vitalício), máquina, telefone (só dígitos), contador e data do último reset |
+| `activation_keys` | Digest SHA-256 da chave (a chave completa só é exibida na geração), últimos 4 caracteres, plano, status (`DISPONIVEL`, `USADA`, `CANCELADA`), cliente, licença e datas |
+| `trial_usages` | Máquina e telefone que já usaram teste, ambos únicos; `user_id` vira nulo se a conta for apagada, mantendo a trava |
+| `license_resets` | Histórico de resets: licença, cópia do e-mail da conta, máquina anterior, administrador, se foi forçado e data. Se a conta for apagada, o histórico fica (a licença vira nula) |
+
+Um índice único parcial impede duas licenças `ATIVA` de contas diferentes na
+mesma máquina. `users.role` (`USER`/`ADMIN`) define o perfil; o cadastro público
+sempre cria `USER`.
+
+- **Locks:** a ativação de chave bloqueia licença e chave com `SELECT ... FOR UPDATE`,
+  nessa ordem. A criação de teste usa locks consultivos por máquina e telefone, e as
+  constraints únicas garantem a regra mesmo sem eles. O reset e as alterações do admin
+  bloqueiam a linha da licença.
+- **Expiração:** é verificada a cada login e a cada `GET /licencas/status` com o relógio
+  do servidor, e gravada como `EXPIRADA` antes da recusa.
+- **Rate limit:** em memória. Login e ativar-chave são limitados por IP. O cadastro é
+  mais restrito, por IP e por e-mail. Senhas erradas são contadas por e-mail, somando
+  as duas rotas que verificam senha. IPv6 é agrupado por /64. Os valores estão em
+  `docs/API_LICENCAS.md`. Com um único processo Uvicorn, a contagem é exata; com várias
+  réplicas, cada uma conta separadamente.
+
+### Conferir o proxy antes de ligar `RATE_LIMIT_TRUST_PROXY`
+
+Com `RATE_LIMIT_TRUST_PROXY=false` (o padrão), a API usa o IP da conexão TCP. Atrás
+do proxy do Railway, esse é o IP do proxy, e **todos os clientes passam a dividir o
+mesmo limite**: 10 logins por minuto e 5 cadastros por hora, no total. Faça a
+conferência logo após o deploy, antes de liberar o app para os clientes.
+
+1. Em **Variables**, defina `RATE_LIMIT_DIAGNOSTICS=true` e deixe
+   `RATE_LIMIT_TRUST_PROXY=false`. A Railway faz o redeploy sozinha.
+2. Descubra o seu IP público, por exemplo abrindo `https://ifconfig.me`. Se a sua rede
+   usa IPv6, compare pelo bloco /64.
+3. Envie duas requisições, uma sem e outra com um cabeçalho falso (as respostas
+   401 ou 422 são esperadas):
+
+   ```sh
+   curl -s -X POST https://SEU-DOMINIO/auth/login -H "Content-Type: application/json" \
+        -d '{"email":"diagnostico@example.com","password":"x","id_maquina":"diagnostico-01"}'
+   curl -s -X POST https://SEU-DOMINIO/auth/login -H "Content-Type: application/json" \
+        -H "X-Forwarded-For: 203.0.113.99" \
+        -d '{"email":"diagnostico@example.com","password":"x","id_maquina":"diagnostico-01"}'
+   ```
+
+4. Em **Deployments → View logs** (Deploy Logs), filtre por `rate_limit_client_ip`.
+   Cada requisição gera uma linha como:
+
+   ```text
+   event=rate_limit_client_ip path=/auth/login xff_header_lines=1 xff_values=['203.0.113.99', '177.10.20.30'] tcp_client=100.64.0.2 trust_proxy=False bucket=100.64.0.2
+   ```
+
+5. Como interpretar:
+   - **Pode ligar:** se, na primeira requisição, `xff_values` termina com o seu IP
+     público e, na segunda, `203.0.113.99` aparece **antes** do seu IP, que continua
+     sendo o último valor. Nesse caso, defina `RATE_LIMIT_TRUST_PROXY=true`.
+     `xff_header_lines=2` também serve: a API junta todas as linhas.
+   - **Não ligue e me avise:** se o último valor não for o seu IP (por exemplo, um
+     endereço interno `10.x`, `100.64.x` ou `172.16-31.x`), se `203.0.113.99` for o
+     último ou o único valor, ou se `xff_values` vier vazio. Nesses casos, o IP real
+     está em outra posição ou em outro cabeçalho, e o código precisa ser ajustado.
+6. Depois de ligar, repita a segunda requisição e confira `trust_proxy=True` e
+   `bucket=<seu IP>`. Em seguida, volte `RATE_LIMIT_DIAGNOSTICS=false`: esse
+   diagnóstico grava IPs, que são dados pessoais.
+
+### Ordem obrigatória do deploy desta etapa
+
+Num banco que já tem usuários, o código novo recusa o login de **todas** as contas
+sem licença (`LICENCA_NAO_ENCONTRADA`), inclusive a sua, até o backfill e o seed do
+administrador rodarem. Clientes antigos do app também passam a receber 422, porque
+o cadastro agora exige `telefone` e `id_maquina` e o login e o refresh exigem
+`id_maquina`. Faça tudo na mesma janela de manutenção, nesta ordem:
+
+1. **Backup:** `pg_dump "$DATABASE_URL" -Fc -f antes_licencas.dump` (de uma máquina
+   com acesso ao banco).
+2. **Deploy** do código desta branch. O comando `railway ssh` abre o container da
+   versão publicada, e só a versão nova contém a migration `0003`. Entre este passo
+   e o seguinte, as rotas de licença respondem com erro.
+3. **Migration:** `alembic upgrade head` (comandos abaixo).
+4. **Administrador:** `python -m scripts.seed_admin` (seção "Administrador").
+5. **Contas antigas:** `python -m scripts.backfill_licenses` para ver a lista e,
+   depois de revisar, `--aplicar`.
+6. **Conferência:** `python -m scripts.backfill_licenses --verificar` precisa
+   terminar com `OK` (código de saída 0). O código 2 significa contas sem licença.
+7. **Proxy:** confira o `X-Forwarded-For` e ligue `RATE_LIMIT_TRUST_PROXY`
+   (seção "Conferir o proxy").
+8. Só então libere o app atualizado para os clientes.
+
+### Migrations no Railway
+
+Execute no container do serviço da API (`railway ssh`), na raiz `/app`, logo após
+publicar o código desta etapa:
+
+```sh
+cd /app
+/app/.venv/bin/python -m alembic upgrade head
+/app/.venv/bin/python -m alembic current   # esperado: 0003_licenses (head)
+```
+
+A migration usa `lock_timeout` de 5 segundos. Se houver muito tráfego e ela não
+conseguir o lock de `users` ou `refresh_tokens` a tempo, ela falha com
+`canceling statement due to lock timeout` sem alterar nada (é transacional). Basta
+repetir o comando, de preferência num horário de pouco uso.
+
+Para desfazer: o downgrade remove as tabelas de licença, `users.role` e
+`refresh_tokens.machine_id`, e `users.cpf` só volta a ser obrigatório se nenhuma conta
+estiver sem CPF. **Isso apaga definitivamente** licenças, chaves vendidas e ainda não
+usadas, e o histórico de resets. Se alguma dessas tabelas tiver dados, o downgrade é
+recusado até você confirmar explicitamente, depois de fazer o backup:
+
+```sh
+pg_dump "$DATABASE_URL" -Fc -f antes_downgrade_licencas.dump
+CONFIRMAR_DOWNGRADE_LICENCAS=apagar-dados-de-licencas \
+  /app/.venv/bin/python -m alembic downgrade 0002_plan_price
+```
+
+Com as tabelas vazias, o downgrade roda sem a variável.
+
+### Administrador
+
+Defina `ADMIN_EMAIL` e `ADMIN_SENHA` (e opcionalmente `ADMIN_NOME`) nas variáveis
+do serviço, ou apenas na sessão do shell, e execute:
+
+```sh
+/app/.venv/bin/python -m scripts.seed_admin
+```
+
+O comando é idempotente. Ele cria a conta `ADMIN` com licença `VITALICIO`, `ATIVA`
+e sem trava de máquina. Se a conta já é `ADMIN`, a senha só muda com
+`--redefinir-senha` (que também revoga as sessões abertas).
+
+Se `ADMIN_EMAIL` já pertencer a uma conta **comum**, o seed recusa. Como o cadastro
+é público, outra pessoa pode ter registrado esse e-mail antes e conheceria a senha.
+Confirme que a conta é sua e rode
+`python -m scripts.seed_admin --promover-existente --redefinir-senha`: a senha passa
+a ser `ADMIN_SENHA` e todas as sessões da conta são revogadas.
+
+Depois, acesse `https://SEU-DOMINIO/admin`.
+
+**Não use a conta de administrador no aplicativo DTF.** Ela nunca é recusada por
+licença (nem bloqueada), não fica presa a nenhuma máquina e entra sem `id_maquina`.
+Quem souber essa senha tem, na prática, uma licença vitalícia em quantos PCs quiser,
+além do acesso ao painel. Use-a só no painel `/admin`, com uma senha exclusiva, e
+crie uma conta comum (com chave `VITALICIO`, se quiser) para usar o app. Não há
+autenticação em dois fatores.
+Remova `ADMIN_SENHA` das variáveis após o uso: ela não é lida pelas rotas.
+
+### Contas antigas sem licença (opcional)
+
+```sh
+/app/.venv/bin/python -m scripts.backfill_licenses            # só simula e lista
+/app/.venv/bin/python -m scripts.backfill_licenses --aplicar  # grava
+```
+
+Administradores recebem `VITALICIO`; os demais, `TESTE` de 7 dias a partir da
+execução. Essas licenças ficam sem máquina e sem telefone: a máquina é vinculada
+na primeira validação.
+
+### Testes
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_license_units.py tests/test_licenses.py -q
+```
+
+`tests/test_licenses.py` precisa de `DATABASE_URL` apontando para um PostgreSQL de
+**teste** com `alembic upgrade head` aplicado; sem ela, os testes são ignorados.
+Cada teste roda em uma transação revertida. Os dois testes de concorrência gravam e
+apagam dados reais e só rodam se o nome do banco contiver `test`. Nunca aponte
+`DATABASE_URL` para produção ao rodar a suíte.
+
 ## Cadastro e planos
 
-O usuário cria uma conta informando nome, CPF, email, senha e plano escolhido.
+Desde a etapa 19, o cadastro recebe nome, telefone, email, senha e `id_maquina` e
+cria a licença `TESTE` do aplicativo. CPF e plano de pagamento passaram a ser
+opcionais; quando o plano é informado, continua sendo criada a assinatura `PENDING`
+do fluxo Mercado Pago descrito abaixo.
 
 | Plano | Duração |
 | --- | --- |

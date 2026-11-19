@@ -1,8 +1,8 @@
-"""Login HTTP e persistência de digest, sem conceder autorização de licença."""
+"""Login HTTP, persistência de digest e retorno da licença; a decisão de licença é isolada aqui."""
 
 import asyncio
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -21,6 +21,9 @@ from app.main import create_app
 from app.modules.auth.login import login_user
 from app.modules.auth.models import RefreshToken
 from app.modules.auth.schemas.input import LoginRequest
+from app.modules.licenses.models import License, LicensePlanCode, LicenseState
+from app.modules.licenses.schemas.contract import LicencaPublica
+from app.modules.licenses.service import AccessDecision
 from app.modules.subscriptions.models import Subscription, SubscriptionStatus
 from app.modules.users.models import User
 from app.shared.security.jwt import decode_access_token, decode_refresh_token
@@ -40,11 +43,23 @@ def jwt_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
 
 @pytest.fixture
 def credentials() -> dict[str, str]:
-    return {"email": "ANA@EXAMPLE.COM", "password": secrets.token_urlsafe(24) + "a1"}
+    return {"email": "ANA@EXAMPLE.COM", "password": secrets.token_urlsafe(24) + "a1", "id_maquina": "maquina-teste-01"}
 
 
 @pytest.fixture
-def database_session(credentials: dict[str, str]) -> MagicMock:
+def license_allowed(monkeypatch: pytest.MonkeyPatch) -> LicencaPublica:
+    """Licença válida; as regras de licença no login são testadas em test_licenses.py."""
+    now: datetime = datetime.now(UTC)
+    public: LicencaPublica = LicencaPublica(
+        plano=LicensePlanCode.TESTE, status=LicenseState.ATIVA, data_ativacao=now,
+        data_expiracao=now + timedelta(days=7), dias_restantes=7, vitalicia=False)
+    monkeypatch.setattr("app.modules.auth.login.authorize_license_login",
+                        lambda session, user, machine_id, now: AccessDecision(public, None))
+    return public
+
+
+@pytest.fixture
+def database_session(credentials: dict[str, str], license_allowed: LicencaPublica) -> MagicMock:
     session: MagicMock = MagicMock(spec=Session)
     session.scalar.return_value = User(id=uuid4(), email="ana@example.com", is_active=True,
                                         password_hash=hash_password(credentials["password"]))
@@ -73,7 +88,8 @@ def test_login_tokens_and_only_refresh_digest_persisted(
     response: Response = post_login(credentials, database_session)
     assert response.status_code == 200, response.text
     result = response.json()
-    assert set(result) == {"access_token", "refresh_token", "token_type", "expires_in"}
+    assert set(result) == {"access_token", "refresh_token", "token_type", "expires_in", "licenca", "servidor_agora"}
+    assert result["licenca"]["plano"] == "TESTE" and result["licenca"]["dias_restantes"] == 7
     assert result["expires_in"] == 540
     assert result["token_type"] == "bearer"
     assert response.headers["cache-control"] == "no-store"
@@ -87,7 +103,10 @@ def test_login_tokens_and_only_refresh_digest_persisted(
     assert stored.token_hash != result["refresh_token"]
     assert stored.expires_at == datetime.fromtimestamp(refresh["exp"], UTC)
     assert stored.revoked_at is None
+    assert stored.machine_id == "maquina-teste-01"
     assert result["refresh_token"] not in vars(stored).values()
+    # Sessão única: o login revoga as sessões anteriores da conta.
+    assert "UPDATE refresh_tokens" in str(database_session.execute.call_args.args[0])
     database_session.begin.assert_called_once()
     database_session.scalar.assert_called_once()
     assert credentials["password"] not in response.text
@@ -177,8 +196,13 @@ def test_login_postgresql_persists_digest_only(monkeypatch: pytest.MonkeyPatch) 
                 id=user_id, name="Login teste", cpf=f"{secrets.randbelow(10**11):011d}",
                 email=email, password_hash=hash_password(password), is_active=True,
             ))
+            connection.execute(License.__table__.insert().values(
+                id=uuid4(), user_id=user_id, plan=LicensePlanCode.VITALICIO, status=LicenseState.ATIVA,
+                activated_at=datetime.now(UTC), expires_at=None, machine_id=None,
+            ))
             with Session(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
-                result = login_user(LoginRequest(email=email, password=password), session)
+                result = login_user(LoginRequest(email=email, password=password, id_maquina=user_id.hex), session)
+                assert result.licenca is not None and result.licenca.vitalicia
                 stored: RefreshToken = session.scalars(select(RefreshToken).where(RefreshToken.user_id == user_id)).one()
                 assert stored.token_hash == sha256(result.refresh_token.encode()).hexdigest()
                 assert result.refresh_token not in vars(stored).values()

@@ -56,7 +56,8 @@ def test_plan_and_subscription_projection() -> None:
 def test_registration_and_password_serialization() -> None:
     password: str = secrets.token_urlsafe(24) + "a1"
     request: UserCreate = UserCreate(name=" Ana ", cpf="12345678909", email="ana@example.com",
-                                    password=password, plan_code="MONTHLY")
+                                    password=password, plan_code="MONTHLY", phone="11912345678",
+                                    machine_id="maquina-ana-0001")
     assert request.name == "Ana"
     assert request.password.get_secret_value() == password
     assert "password" not in request.model_dump()
@@ -68,15 +69,17 @@ def test_registration_and_password_serialization() -> None:
 def test_email_validation(schema: type[BaseModel]) -> None:
     with pytest.raises(ValidationError):
         schema.model_validate({"email": "invalid", "password": secrets.token_urlsafe(),
-                               **({"name": "Ana", "cpf": "12345678901", "plan_code": "ANNUAL"}
+                               **({"name": "Ana", "cpf": "12345678901", "plan_code": "ANNUAL",
+                                      "telefone": "11912345678", "id_maquina": "maquina-ana-0001"}
                                   if schema is UserCreate else {})})
 
 
-@pytest.mark.parametrize("field", ["is_active", "password_hash", "token_hash", "jwt_access_secret", "status"])
+@pytest.mark.parametrize("field", ["is_active", "password_hash", "token_hash", "jwt_access_secret", "status", "role"])
 def test_registration_rejects_internal_fields(field: str) -> None:
     with pytest.raises(ValidationError):
-        UserCreate.model_validate({"name": "Ana", "cpf": "12345678901", "email": "ana@example.com",
-                                   "password": secrets.token_urlsafe(), "plan_code": "ANNUAL", field: True})
+        UserCreate.model_validate({"name": "Ana", "cpf": "12345678909", "email": "ana@example.com",
+                                   "password": secrets.token_urlsafe() + "a1", "plan_code": "ANNUAL",
+                                   "telefone": "11912345678", "id_maquina": "maquina-ana-0001", field: True})
 
 
 @pytest.mark.parametrize("schema", [PlanSelection, SubscriptionCreate])
@@ -90,7 +93,8 @@ def test_plan_selection_cannot_activate_license(schema: type[BaseModel]) -> None
 def test_refresh_credential_excluded(schema: type[BaseModel]) -> None:
     token: str = secrets.token_urlsafe(32)
     value: BaseModel = schema.model_validate({"refresh_token": token})
-    assert value.model_dump() == {}
+    assert "refresh_token" not in value.model_dump()
+    assert token not in str(value.model_dump())
     assert token not in repr(value)
 
 

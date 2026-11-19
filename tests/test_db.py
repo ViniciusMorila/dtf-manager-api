@@ -157,22 +157,32 @@ def test_model_discovery_and_modern_mapping(monkeypatch: pytest.MonkeyPatch, tmp
 @pytest.mark.parametrize("driver", ["postgresql", "postgresql+psycopg"])
 def test_alembic_offline_initial_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, driver: str) -> None:
     config: Config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == ["0002_plan_price"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["0003_licenses"]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ENVIRONMENT", "testing")
     monkeypatch.setenv("DATABASE_URL", f"{driver}://localhost/dtf_test")
     output: StringIO = StringIO()
     config.output_buffer = output
     command.upgrade(config, "head", sql=True)
-    for name in ("users", "plans", "subscriptions", "payments", "refresh_tokens"):
+    for name in ("users", "plans", "subscriptions", "payments", "refresh_tokens",
+                 "licenses", "activation_keys", "trial_usages", "license_resets"):
         assert f"CREATE TABLE {name}" in output.getvalue()
     assert "CREATE TYPE subscription_status AS ENUM" in output.getvalue()
     assert "CREATE TYPE payment_status AS ENUM" in output.getvalue()
     assert "ALTER TABLE plans ADD COLUMN price NUMERIC(18, 2)" in output.getvalue()
     assert "ck_plans_positive_price" in output.getvalue()
+    assert "CREATE TYPE license_plan AS ENUM" in output.getvalue()
+    assert "CREATE UNIQUE INDEX ux_licenses_active_machine" in output.getvalue()
+    assert "ALTER TABLE users ALTER COLUMN cpf DROP NOT NULL" in output.getvalue()
+    upgrade_sql: str = output.getvalue()
+    assert upgrade_sql.index("SET LOCAL lock_timeout = '5s'") < upgrade_sql.index("ALTER TABLE users ADD COLUMN role")
     output.truncate(0)
     output.seek(0)
-    command.downgrade(config, "0002_plan_price:base", sql=True)
+    command.downgrade(config, "0003_licenses:base", sql=True)
+    assert "DROP TABLE licenses" in output.getvalue()
+    assert "ATENCAO: este SQL apaga definitivamente" in output.getvalue()
+    assert output.getvalue().index("SET LOCAL lock_timeout") < output.getvalue().index("DROP TABLE licenses")
+    assert "DROP TYPE license_plan" in output.getvalue()
     assert "DROP COLUMN price" in output.getvalue()
     assert "DROP TYPE payment_status" in output.getvalue()
     assert "DROP TYPE subscription_status" in output.getvalue()
