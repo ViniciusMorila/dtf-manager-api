@@ -25,10 +25,11 @@ Estas instruções se aplicam a todo este repositório e às futuras implementa�
 - `.env` não deve ser versionado; `.env.example` deve conter apenas exemplos fictícios. Não definir secrets padrão no código. Secrets JWT ausentes ou inseguros devem impedir a inicialização em production.
 - Adicionar tipagem Python em todo código novo.
 - Validar imports, executar testes básicos e verificar a inicialização com Uvicorn.
-- Endpoints autorizados: health, cadastro, login, refresh, logout, /license/status, /me, POST /payments/mercado-pago/webhook, GET /plans, POST /payments/checkout e GET /payments/{payment_id}. Pix direto e ativação continuam internos; checkout exige JWT e propriedade da assinatura.
+- Endpoints autorizados: health, cadastro, login, refresh, logout, /license/status, /me, POST /payments/mercado-pago/webhook, GET /plans, POST /payments/checkout, GET /payments/{payment_id}, GET /licencas/status, POST /licencas/ativar-chave, as rotas /admin/chaves e /admin/licencas e a página GET /admin. Pix direto e ativação continuam internos; checkout exige JWT e propriedade da assinatura.
 - NÃO alterar o aplicativo DTF Manager.
 - ETAPA 18 autorizada: SDK oficial Mercado Pago isolado no provider, cobrança Pix interna, preço Decimal no plano e webhook público assinado. Consultar o pagamento no provedor antes de reconciliar; validar ID, referência, vínculos, valor, moeda e ambiente. Somente PaymentService ativa a assinatura. Persistir intenção antes da rede e reutilizar chave/corpo no retry. Testar com mocks, nunca fazer cobranças reais.
-- Funcionalidades além da etapa 18 dependem de uma solicitação posterior do usuário.
+- ETAPA 19 autorizada: licenças do aplicativo desktop no domínio `licenses` (tabelas licenses, activation_keys, trial_usages e license_resets; migration 0003 apenas aditiva). Cadastro recebe nome, telefone, email, senha e id_maquina e cria, na mesma transação, a licença TESTE de 7 dias presa à máquina e ao telefone, recusando com TESTE_JA_UTILIZADO se qualquer um já constar em trial_usages. Login e /licencas/status validam licença, expiração (gravando EXPIRADA) e máquina com o relógio do servidor. Chaves XXXX-XXXX-XXXX-XXXX geradas com `secrets`, persistidas só como digest, de uso único; renovação soma à expiração válida ou conta de agora; vitalício zera a expiração. Perfil ADMIN em users.role, nunca atribuído pelo cadastro, criado por scripts/seed_admin.py. Reset de máquina limitado a 3 por 12 meses (forcar explícito). Locks de linha em ativação, criação de teste e reset; rate limit em cadastro, login e ativação. Códigos de erro estáveis documentados em docs/API_LICENCAS.md.
+- Funcionalidades além da etapa 19 dependem de uma solicitação posterior do usuário.
 
 ## Arquitetura obrigatória
 
@@ -83,7 +84,7 @@ DTF MANAGER (aplicativo)
 
 ## Cadastro e planos
 
-- O cadastro recebe nome, CPF, email, senha e plano escolhido.
+- O cadastro recebe nome, telefone, email, senha e id_maquina; CPF e plano de pagamento são opcionais (plano informado cria Subscription PENDING).
 - Preservar os identificadores e durações dos planos:
   - `MONTHLY`: 1 mês.
   - `SEMIANNUAL`: 6 meses.
@@ -99,7 +100,7 @@ DTF MANAGER (aplicativo)
 - Para `LIFETIME`, `expires_at` deverá ser `null`.
 - Uma assinatura vitalícia também depende de pagamento confirmado e status válido para conceder acesso.
 - Sempre consultar a validade da licença no banco através da API, considerando status e vigência.
-- Toda futura funcionalidade protegida por licença deve usar `SubscriptionService.get_license_status` e exigir `active = true`, sem duplicar regras. Falha do serviço nunca concede autorização. Login/refresh continuam apenas autenticando.
+- A licença do aplicativo desktop é decidida exclusivamente por `app.modules.licenses.service.check_access` (login e /licencas/status). A assinatura de pagamento continua em `SubscriptionService.get_license_status` (/license/status e /me). Falha de qualquer serviço nunca concede autorização. Refresh continua apenas autenticando.
 - Não conceder acesso licenciado a assinaturas `PENDING` ou vencidas.
 - Nunca gerar licença a partir de CPF, email ou nome.
 - Não usar dados fornecidos pelo aplicativo como prova de pagamento ou de licença ativa.

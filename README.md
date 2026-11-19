@@ -1,5 +1,12 @@
 # API DTF Manager
 
+Etapa 19: licenças do aplicativo desktop. O cadastro cria um teste de 7 dias
+preso à máquina e ao telefone, o login valida licença, expiração e máquina, e
+chaves de ativação de uso único aplicam os planos `MENSAL`, `SEMESTRAL`, `ANUAL`
+e `VITALICIO`. O administrador tem rotas e um painel em `/admin`. O contrato
+completo para a integração do DTF está em [docs/API_LICENCAS.md](docs/API_LICENCAS.md);
+veja também a seção [Licenças do aplicativo — etapa 19](#licenças-do-aplicativo--etapa-19).
+
 Para diagnosticar assinaturas de Webhooks, distinguir IPN e recuperar um pagamento
 já aprovado sem nova cobrança, consulte o [procedimento operacional](docs/mercado_pago.md#auditoria-de-assinatura-e-recuperação).
 
@@ -233,10 +240,12 @@ cd /app
 /app/.venv/bin/python -m alembic current
 ```
 
-A revisão esperada é `0002_plan_price (head)`. A sequência existente é
-`base → 0001_initial_schema → 0002_plan_price`. Em um PostgreSQL vazio, cria
+A revisão esperada é `0003_licenses (head)`. A sequência existente é
+`base → 0001_initial_schema → 0002_plan_price → 0003_licenses`. Em um PostgreSQL vazio, cria
 `plans`, `users`, `refresh_tokens`, `subscriptions`, `payments` e a tabela de
 controle `alembic_version`, incluindo enums, constraints, índices e `plans.price`.
+A `0003_licenses` adiciona `users.role`, torna `users.cpf` opcional e cria
+`licenses`, `activation_keys`, `trial_usages` e `license_resets`, sem apagar dados.
 Essa conclusão foi revisada no código e no SQL offline; não representa execução
 ou inspeção do banco de produção. Nenhuma migration é executada pelo start.
 
@@ -611,9 +620,92 @@ Os métodos públicos de PaymentService recebem uma sessão sem transação já 
 
 Os testes cobrem duplicidades, dinheiro, vínculo com a assinatura, atualizações, aprovação repetida e falha na ativação. Os testes PostgreSQL verificam aprovação/ativação persistidas e rollback conjunto; sem `DATABASE_URL`, são ignorados. Nenhum schema de banco ou migration foi alterado.
 
+## Licenças do aplicativo — etapa 19
+
+Contrato HTTP completo, códigos de erro e exemplos: [docs/API_LICENCAS.md](docs/API_LICENCAS.md).
+
+| Tabela | Conteúdo |
+| --- | --- |
+| `licenses` | Uma por usuário (`user_id` único): plano, status (`ATIVA`, `EXPIRADA`, `BLOQUEADA`), ativação, expiração (nula no vitalício), máquina, telefone (só dígitos), contador e data do último reset |
+| `activation_keys` | Digest SHA-256 da chave (a chave completa só é exibida na geração), últimos 4 caracteres, plano, status (`DISPONIVEL`, `USADA`, `CANCELADA`), cliente, licença e datas |
+| `trial_usages` | Máquina e telefone que já usaram teste, ambos únicos; `user_id` vira nulo se a conta for apagada, mantendo a trava |
+| `license_resets` | Histórico de resets: licença, máquina anterior, administrador, se foi forçado e data |
+
+Um índice único parcial impede duas licenças `ATIVA` de contas diferentes na
+mesma máquina. `users.role` (`USER`/`ADMIN`) define o perfil; o cadastro público
+sempre cria `USER`.
+
+- **Locks:** a ativação de chave bloqueia licença e chave com `SELECT ... FOR UPDATE`,
+  nessa ordem. A criação de teste usa locks consultivos por máquina e telefone, e as
+  constraints únicas garantem a regra mesmo sem eles. O reset e as alterações do admin
+  bloqueiam a linha da licença.
+- **Expiração:** é verificada a cada login e a cada `GET /licencas/status` com o relógio
+  do servidor, e gravada como `EXPIRADA` antes da recusa.
+- **Rate limit:** em memória, por IP e por rota, em cadastro, login e ativação de chave.
+  Como o Railway roda um único processo Uvicorn, a contagem é exata. Com várias réplicas,
+  cada uma conta separadamente.
+
+### Migrations no Railway
+
+Execute no container do serviço da API (`railway ssh`), na raiz `/app`, antes ou
+logo após publicar o código desta etapa:
+
+```sh
+cd /app
+/app/.venv/bin/python -m alembic upgrade head
+/app/.venv/bin/python -m alembic current   # esperado: 0003_licenses (head)
+```
+
+Para desfazer (remove as tabelas de licença e `users.role`; `users.cpf` só volta
+a obrigatório se nenhuma conta estiver sem CPF):
+
+```sh
+/app/.venv/bin/python -m alembic downgrade 0002_plan_price
+```
+
+### Administrador
+
+Defina `ADMIN_EMAIL` e `ADMIN_SENHA` (e opcionalmente `ADMIN_NOME`) nas variáveis
+do serviço, ou apenas na sessão do shell, e execute:
+
+```sh
+/app/.venv/bin/python -m scripts.seed_admin
+```
+
+O comando é idempotente. Ele cria a conta ou promove uma existente a `ADMIN`, com
+licença `VITALICIO`, `ATIVA` e sem trava de máquina. A senha de uma conta existente
+só é trocada com `--redefinir-senha`. Depois, acesse `https://SEU-DOMINIO/admin`.
+Remova `ADMIN_SENHA` das variáveis após o uso: ela não é lida pelas rotas.
+
+### Contas antigas sem licença (opcional)
+
+```sh
+/app/.venv/bin/python -m scripts.backfill_licenses            # só simula e lista
+/app/.venv/bin/python -m scripts.backfill_licenses --aplicar  # grava
+```
+
+Administradores recebem `VITALICIO`; os demais, `TESTE` de 7 dias a partir da
+execução. Essas licenças ficam sem máquina e sem telefone: a máquina é vinculada
+na primeira validação.
+
+### Testes
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_license_units.py tests/test_licenses.py -q
+```
+
+`tests/test_licenses.py` precisa de `DATABASE_URL` apontando para um PostgreSQL de
+**teste** com `alembic upgrade head` aplicado; sem ela, os testes são ignorados.
+Cada teste roda em uma transação revertida. Os dois testes de concorrência gravam e
+apagam dados reais e só rodam se o nome do banco contiver `test`. Nunca aponte
+`DATABASE_URL` para produção ao rodar a suíte.
+
 ## Cadastro e planos
 
-O usuário cria uma conta informando nome, CPF, email, senha e plano escolhido.
+Desde a etapa 19, o cadastro recebe nome, telefone, email, senha e `id_maquina` e
+cria a licença `TESTE` do aplicativo. CPF e plano de pagamento passaram a ser
+opcionais; quando o plano é informado, continua sendo criada a assinatura `PENDING`
+do fluxo Mercado Pago descrito abaixo.
 
 | Plano | Duração |
 | --- | --- |

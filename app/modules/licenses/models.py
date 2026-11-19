@@ -52,7 +52,6 @@ class ActivationKeyStatus(StrEnum):
 ACTIVE_MACHINE_INDEX: str = "ux_licenses_active_machine"
 TRIAL_MACHINE_CONSTRAINT: str = "uq_trial_usages_machine_id"
 TRIAL_PHONE_CONSTRAINT: str = "uq_trial_usages_phone"
-LICENSE_USER_CONSTRAINT: str = "uq_licenses_user_id"
 
 
 class License(UUIDPrimaryKey, Timestamps, Base):
