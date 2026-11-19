@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     environment: Literal["development", "testing", "staging", "production"] = "development"
     host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(default=8000, ge=1, le=65535)
+    # Rate limit de cadastro, login e ativação de chave (por IP, por rota).
+    rate_limit_enabled: bool = True
+    rate_limit_requests: int = Field(default=10, gt=0)
+    rate_limit_window_seconds: int = Field(default=60, gt=0)
+    rate_limit_trust_proxy: bool = True
+    # Usadas somente por scripts/seed_admin.py; nunca lidas pelas rotas.
+    admin_email: str | None = None
+    admin_senha: SecretStr | None = None
+    admin_nome: str = Field(default="Administrador", min_length=1, max_length=200)
 
     @field_validator("api_public_base_url")
     @classmethod
