@@ -1,4 +1,7 @@
-"""Rotação HTTP, rejeição de reuso e rollback PostgreSQL quando disponível."""
+"""Rotação HTTP, rejeição de reuso e rollback PostgreSQL quando disponível.
+
+A decisão de licença é isolada aqui; refresh com licença real está em test_licenses.py.
+"""
 
 import asyncio
 import secrets
@@ -21,6 +24,9 @@ from app.main import create_app
 from app.modules.auth.models import RefreshToken
 from app.modules.auth.refresh import refresh_session
 from app.modules.auth.schemas.input import RefreshRequest
+from app.modules.licenses.models import License, LicensePlanCode, LicenseState
+from app.modules.licenses.schemas.contract import LicencaPublica
+from app.modules.licenses.service import AccessDecision
 from app.modules.users.models import User
 from app.shared.exceptions.authentication import InvalidRefreshToken, RefreshFailed
 from app.shared.security.jwt import (
@@ -41,6 +47,20 @@ def settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
     return Settings()
 
 
+MACHINE: str = "maquina-refresh-01"
+
+
+@pytest.fixture(autouse=True)
+def license_allowed(monkeypatch: pytest.MonkeyPatch) -> LicencaPublica:
+    now: datetime = datetime.now(UTC)
+    public: LicencaPublica = LicencaPublica(
+        plano=LicensePlanCode.ANUAL, status=LicenseState.ATIVA, data_ativacao=now,
+        data_expiracao=now + timedelta(days=30), dias_restantes=30, vitalicia=False)
+    monkeypatch.setattr("app.modules.auth.refresh.authorize_license_refresh",
+                        lambda session, user, machine_id, now: AccessDecision(public, None))
+    return public
+
+
 @pytest.fixture
 def token(settings: Settings) -> str:
     return create_refresh_token(uuid4(), settings=settings)
@@ -53,13 +73,13 @@ def database_session(settings: Settings, token: str) -> MagicMock:
     payload = decode_refresh_token(token, settings=settings)
     user: User = User(id=UUID(payload["sub"]), is_active=True)
     stored: RefreshToken = RefreshToken(id=uuid4(), user_id=user.id, token_hash=hash_refresh_token(token),
-        expires_at=datetime.fromtimestamp(payload["exp"], UTC), revoked_at=None)
+        expires_at=datetime.fromtimestamp(payload["exp"], UTC), revoked_at=None, machine_id=MACHINE)
     session: MagicMock = MagicMock(spec=Session)
     session.scalar.side_effect = [user, stored]
     return session
 
 
-def post_refresh(token: str, session: Session) -> Response:
+def post_refresh(token: str, session: Session, machine: str | None = MACHINE) -> Response:
     application = create_app()
 
     def override_session() -> Session:
@@ -69,7 +89,10 @@ def post_refresh(token: str, session: Session) -> Response:
 
     async def post() -> Response:
         async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as client:
-            return await client.post("/auth/refresh", json={"refresh_token": token})
+            body: dict[str, str] = {"refresh_token": token}
+            if machine is not None:
+                body["id_maquina"] = machine
+            return await client.post("/auth/refresh", json=body)
 
     return asyncio.run(post())
 
@@ -80,7 +103,8 @@ def test_valid_rotation_and_reuse(settings: Settings, token: str, database_sessi
     response: Response = post_refresh(token, database_session)
     assert response.status_code == 200, response.text
     result = response.json()
-    assert set(result) == {"access_token", "refresh_token", "token_type", "expires_in"}
+    assert set(result) == {"access_token", "refresh_token", "token_type", "expires_in", "licenca", "servidor_agora"}
+    assert result["licenca"]["plano"] == "ANUAL"
     assert result["refresh_token"] != token
     assert result["token_type"] == "bearer"
     assert result["expires_in"] == settings.jwt_access_expire_minutes * 60
@@ -88,6 +112,7 @@ def test_valid_rotation_and_reuse(settings: Settings, token: str, database_sessi
     assert stored.revoked_at is not None
     replacement: RefreshToken = database_session.add.call_args.args[0]
     assert replacement.token_hash == hash_refresh_token(result["refresh_token"])
+    assert replacement.machine_id == MACHINE
     assert result["refresh_token"] not in vars(replacement).values()
     claims = decode_refresh_token(result["refresh_token"], settings=settings)
     assert replacement.expires_at == datetime.fromtimestamp(claims["exp"], UTC)
@@ -144,6 +169,35 @@ def test_invalid_database_state(settings: Settings, token: str, database_session
     database_session.add.assert_not_called()
 
 
+@pytest.mark.parametrize("machine", [None, "outra-maquina-99"])
+def test_refresh_requires_login_machine_and_keeps_token(
+    settings: Settings, token: str, database_session: MagicMock, machine: str | None,
+) -> None:
+    user, stored = list(database_session.scalar.side_effect)
+    database_session.scalar.side_effect = [user, stored]
+    response: Response = post_refresh(token, database_session, machine=machine)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "MAQUINA_DIFERENTE"
+    assert stored.revoked_at is None
+    database_session.add.assert_not_called()
+
+
+def test_license_refusal_on_refresh_keeps_token(
+    settings: Settings, token: str, database_session: MagicMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.shared.exceptions.license import LicenseBlocked
+
+    monkeypatch.setattr("app.modules.auth.refresh.authorize_license_refresh",
+                        lambda session, user, machine_id, now: AccessDecision(None, LicenseBlocked()))
+    user, stored = list(database_session.scalar.side_effect)
+    database_session.scalar.side_effect = [user, stored]
+    response: Response = post_refresh(token, database_session)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "LICENCA_BLOQUEADA"
+    assert "access_token" not in response.text
+    assert stored.revoked_at is None
+
+
 @pytest.mark.parametrize("failure", ["flush", "commit"])
 def test_transaction_failure_does_not_deliver_tokens(settings: Settings, token: str, database_session: MagicMock, failure: str) -> None:
     if failure == "flush":
@@ -177,19 +231,25 @@ def test_postgresql_rotation_and_rollback(monkeypatch: pytest.MonkeyPatch, fail_
                 email=f"{user_id.hex}@example.com", cpf=f"{secrets.randbelow(10**11):011d}",
                 password_hash=secrets.token_hex(32), is_active=True))
             connection.execute(RefreshToken.__table__.insert().values(user_id=user_id,
-                token_hash=hash_refresh_token(token), expires_at=datetime.fromtimestamp(claims["exp"], UTC)))
+                token_hash=hash_refresh_token(token), expires_at=datetime.fromtimestamp(claims["exp"], UTC),
+                machine_id=MACHINE))
+            connection.execute(License.__table__.insert().values(
+                id=uuid4(), user_id=user_id, plan=LicensePlanCode.ANUAL, status=LicenseState.ATIVA,
+                activated_at=datetime.now(UTC), expires_at=datetime.now(UTC) + timedelta(days=30),
+                machine_id=MACHINE))
             with Session(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
                 if fail_insert:
                     event.listen(RefreshToken, "before_insert", fail)
                     try:
                         with pytest.raises(RefreshFailed):
-                            refresh_session(RefreshRequest(refresh_token=token), session)
+                            refresh_session(RefreshRequest(refresh_token=token, id_maquina=MACHINE), session)
                     finally:
                         event.remove(RefreshToken, "before_insert", fail)
                 else:
-                    result = refresh_session(RefreshRequest(refresh_token=token), session)
+                    result = refresh_session(RefreshRequest(refresh_token=token, id_maquina=MACHINE), session)
                     with pytest.raises(InvalidRefreshToken):
-                        refresh_session(RefreshRequest(refresh_token=token), session)
+                        refresh_session(RefreshRequest(refresh_token=token, id_maquina=MACHINE), session)
+                    assert result.licenca is not None and result.licenca.plano == LicensePlanCode.ANUAL
                     assert result.refresh_token != token
                 rows = session.scalars(select(RefreshToken).where(RefreshToken.user_id == user_id)).all()
                 assert len(rows) == (1 if fail_insert else 2)

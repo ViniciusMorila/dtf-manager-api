@@ -78,7 +78,9 @@ existente também trazem `licenca` e `servidor_agora`:
    tokens e a `licenca`.
 3. **A cada abertura:** `GET /licencas/status` com o Bearer e o cabeçalho
    `X-Id-Maquina`. Libere o uso só com HTTP 200. Se o access expirou (401), use
-   `POST /auth/refresh` e repita.
+   `POST /auth/refresh` com o `id_maquina` e repita. Se o refresh devolver
+   `INVALID_REFRESH_TOKEN`, a sessão foi encerrada (por um login em outro lugar, um
+   bloqueio ou um reset): volte para a tela de login.
 4. **Licença expirada ou ausente:** o login recusa (`LICENCA_EXPIRADA` /
    `LICENCA_NAO_ENCONTRADA`) e não emite tokens. Peça a chave e chame
    `POST /licencas/ativar-chave` com `email` e `senha` no corpo. Depois, faça
@@ -146,6 +148,10 @@ O cadastro não devolve tokens; faça o login em seguida.
 
 Valida as credenciais, a licença, a expiração e a máquina. Na primeira
 validação, ou logo após um reset, a licença é vinculada à máquina enviada.
+
+**Sessão única:** cada login bem-sucedido encerra as sessões anteriores da conta.
+Os refresh tokens antigos param de funcionar; um access token já emitido continua
+valendo até expirar (15 minutos). A sessão fica associada ao `id_maquina` do login.
 
 **200 OK**
 
@@ -246,13 +252,35 @@ Como o plano é aplicado:
 - `MUITAS_TENTATIVAS` (429)
 - `LICENCA_INDISPONIVEL` (503)
 
+### `POST /auth/refresh` (pública)
+
+```json
+{ "refresh_token": "…", "id_maquina": "c0ffee00-1234-4abc-9def-001122334455" }
+```
+
+Troca o refresh por um par novo (o antigo deixa de valer) e repete a validação da
+licença. O `id_maquina` precisa ser o mesmo do login (é obrigatório para contas
+comuns). Uma recusa de licença ou de máquina **não** consome o refresh token.
+
+**200 OK:** mesmo formato da resposta do login, com `licenca` e `servidor_agora`.
+
+**Erros:**
+- `INVALID_REFRESH_TOKEN` (401): token inválido, expirado, já usado ou de sessão
+  encerrada. Faça login de novo.
+- `MAQUINA_DIFERENTE` (403): `id_maquina` ausente ou diferente do login.
+- `MAQUINA_EM_USO` (409)
+- `LICENCA_EXPIRADA` (403): o status é gravado como `EXPIRADA`.
+- `LICENCA_BLOQUEADA` (403)
+- `LICENCA_NAO_ENCONTRADA` (404)
+- `AUTHENTICATION_UNAVAILABLE` (503) / `AUTHENTICATION_FAILED` (500)
+
 ### Rotas existentes que continuam iguais
 
-`POST /auth/refresh`, `POST /auth/logout`, `GET /me`, `GET /plans`,
-`POST /payments/checkout` e `GET /payments/{id}` não mudaram. O refresh **não**
-valida a licença; por isso `GET /licencas/status` deve ser chamado a cada
-abertura. `GET /license/status` e `GET /me` continuam refletindo a
-**assinatura de pagamento** (Mercado Pago), não a licença do aplicativo.
+`POST /auth/logout`, `GET /me`, `GET /plans`, `POST /payments/checkout` e
+`GET /payments/{id}` não mudaram. `GET /license/status` e `GET /me` continuam
+refletindo a **assinatura de pagamento** (Mercado Pago), não a licença do
+aplicativo. Mesmo com o refresh validando a licença, chame `GET /licencas/status`
+a cada abertura.
 
 ## Rotas do administrador
 
@@ -266,9 +294,9 @@ por `POST /auth/login` sem `id_maquina`.
 | `GET /admin/chaves` | `status`, `plano`, `busca` (nome/contato), `limite` (1–200, padrão 50), `deslocamento` | `{"total", "itens": [ChaveAdmin]}` |
 | `POST /admin/chaves/{id}/cancelar` | — | `ChaveAdmin`; só chaves `DISPONIVEL` (senão `CHAVE_INVALIDA` 409) |
 | `GET /admin/licencas` | `status`, `plano`, `busca` (nome, e-mail ou telefone), `limite`, `deslocamento` | `{"total", "itens": [LicencaAdmin]}` |
-| `POST /admin/licencas/{id}/bloquear` | — | `LicencaAdmin` |
+| `POST /admin/licencas/{id}/bloquear` | — | `LicencaAdmin`; encerra as sessões do usuário |
 | `POST /admin/licencas/{id}/desbloquear` | — | `LicencaAdmin` (volta para `ATIVA` ou `EXPIRADA`, conforme a data) |
-| `POST /admin/licencas/{id}/resetar-maquina` | `{"forcar": false}` (opcional) | `LicencaAdmin`; acima de 3 resets em 12 meses: `LIMITE_RESETS` (409), a menos que `forcar: true` |
+| `POST /admin/licencas/{id}/resetar-maquina` | `{"forcar": false}` (opcional) | `LicencaAdmin`; encerra as sessões do usuário; acima de 3 resets em 12 meses: `LIMITE_RESETS` (409), a menos que `forcar: true` |
 | `PATCH /admin/licencas/{id}` | `{"plano"?, "data_expiracao"?}` | `LicencaAdmin`; `VITALICIO` remove a expiração; incompatível: `ALTERACAO_INVALIDA` (422) |
 | `GET /admin` | — | Página HTML do painel (listar licenças e chaves, gerar, bloquear, desbloquear, resetar, cancelar) |
 

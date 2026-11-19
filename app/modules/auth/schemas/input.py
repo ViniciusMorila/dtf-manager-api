@@ -21,7 +21,11 @@ class LoginRequest(InputSchema):
 
 class RefreshRequest(InputSchema):
     refresh_token: SecretStr = Field(min_length=1, exclude=True, repr=False)
+    # Obrigatório para contas comuns: precisa ser a máquina do login.
+    id_maquina: MachineId | None = None
 
 
-class LogoutRequest(RefreshRequest):
+class LogoutRequest(InputSchema):
     """Identifica a sessão a revogar sem aceitar token_hash interno."""
+
+    refresh_token: SecretStr = Field(min_length=1, exclude=True, repr=False)

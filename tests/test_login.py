@@ -103,7 +103,10 @@ def test_login_tokens_and_only_refresh_digest_persisted(
     assert stored.token_hash != result["refresh_token"]
     assert stored.expires_at == datetime.fromtimestamp(refresh["exp"], UTC)
     assert stored.revoked_at is None
+    assert stored.machine_id == "maquina-teste-01"
     assert result["refresh_token"] not in vars(stored).values()
+    # Sessão única: o login revoga as sessões anteriores da conta.
+    assert "UPDATE refresh_tokens" in str(database_session.execute.call_args.args[0])
     database_session.begin.assert_called_once()
     database_session.scalar.assert_called_once()
     assert credentials["password"] not in response.text

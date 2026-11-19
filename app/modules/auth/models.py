@@ -21,5 +21,7 @@ class RefreshToken(UUIDPrimaryKey, CreatedAt, Base):
     token_hash: Mapped[str] = mapped_column(String(512), unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Máquina do login que emitiu a sessão; o refresh exige a mesma.
+    machine_id: Mapped[str | None] = mapped_column(String(128))
 
     user: Mapped["User"] = relationship(back_populates="refresh_tokens")

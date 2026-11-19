@@ -8,7 +8,7 @@ import secrets
 from datetime import UTC, datetime
 
 from pydantic import SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -99,9 +99,14 @@ def login_user(data: LoginRequest, session: Session) -> LoginResponse:
                 access: str = create_access_token(user.id, settings=settings)
                 refresh: str = create_refresh_token(user.id, settings=settings)
                 refresh_payload = decode_refresh_token(refresh, settings=settings)
+                # Sessão única por conta: um novo login encerra as sessões anteriores.
+                session.execute(update(RefreshToken).where(
+                    RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None),
+                ).values(revoked_at=now))
                 session.add(RefreshToken(
                     user_id=user.id, token_hash=hash_refresh_token(refresh),
                     expires_at=datetime.fromtimestamp(refresh_payload["exp"], UTC), revoked_at=None,
+                    machine_id=data.id_maquina,
                 ))
                 session.flush()
                 response = LoginResponse(

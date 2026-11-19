@@ -8,7 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from app.core.config import Settings
 from app.db.session import SessionDependency
 from app.modules.auth.dependencies import CurrentUserDependency
-from app.modules.payments.diagnostics import capture_webhook_headers, log_checkout_failure, log_webhook_diagnostic
+from app.modules.payments.diagnostics import (
+    capture_webhook_headers,
+    log_checkout_failure,
+    log_webhook_diagnostic,
+)
 from app.modules.payments.mercado_pago import (
     InvalidSignature,
     MercadoPagoPaymentProvider,

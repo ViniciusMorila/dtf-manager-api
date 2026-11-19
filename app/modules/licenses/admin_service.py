@@ -9,6 +9,7 @@ from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.modules.auth.models import RefreshToken
 from app.modules.licenses.models import (
     ActivationKey,
     ActivationKeyStatus,
@@ -175,6 +176,13 @@ def list_licenses(session: Session, *, status: LicenseState | None, plan: Licens
     return _run(session, operation)
 
 
+def revoke_sessions(session: Session, user_id: UUID, now: datetime) -> int:
+    """Bloqueio e reset encerram as sessões: o refresh deixa de funcionar na hora."""
+    return session.execute(update(RefreshToken).where(
+        RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None),
+    ).values(revoked_at=now)).rowcount
+
+
 def _locked(session: Session, license_id: UUID) -> tuple[License, User]:
     row = session.execute(
         select(License, User).join(User, License.user_id == User.id).where(License.id == license_id)
@@ -189,6 +197,7 @@ def block_license(session: Session, license_id: UUID) -> LicencaAdmin:
     def operation() -> LicencaAdmin:
         license, user = _locked(session, license_id)
         license.status = LicenseState.BLOQUEADA
+        revoke_sessions(session, user.id, utc_now())
         session.flush()
         session.refresh(license)
         return to_admin(license, user, utc_now())
@@ -228,6 +237,7 @@ def reset_machine(session: Session, *, license_id: UUID, admin_id: UUID, force: 
         license.machine_id = None
         license.reset_count += 1
         license.last_reset_at = now
+        revoke_sessions(session, user.id, now)
         session.flush()
         session.refresh(license)
         return to_admin(license, user, now)

@@ -35,6 +35,7 @@ def upgrade() -> None:
 
     op.add_column("users", sa.Column("role", user_role, server_default="USER", nullable=False))
     op.alter_column("users", "cpf", existing_type=sa.String(length=11), nullable=True)
+    op.add_column("refresh_tokens", sa.Column("machine_id", sa.String(length=128), nullable=True))
 
     op.create_table(
         "licenses",
@@ -134,6 +135,7 @@ def downgrade() -> None:
     op.drop_table("trial_usages")
     op.drop_table("activation_keys")
     op.drop_table("licenses")
+    op.drop_column("refresh_tokens", "machine_id")
     op.drop_column("users", "role")
     bind = op.get_bind()
     # Em modo offline (--sql) não há como contar linhas; o SQL gerado mantém a coluna opcional.

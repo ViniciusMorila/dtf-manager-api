@@ -631,3 +631,52 @@ def test_registration_is_limited_per_email(account_limits: None, api: Api) -> No
     assert error_code(attempt()) == "EMAIL_ALREADY_EXISTS"
     blocked: Response = attempt()
     assert blocked.status_code == 429 and error_code(blocked) == "MUITAS_TENTATIVAS"
+
+
+# --- Sessões: sessão única, refresh com licença e máquina, revogação -------------------------
+
+def refresh(api: Api, refresh_token: str, machine: str | None) -> Response:
+    body: dict[str, str] = {"refresh_token": refresh_token}
+    if machine is not None:
+        body["id_maquina"] = machine
+    return api.request("POST", "/auth/refresh", json=body)
+
+
+def test_new_login_ends_previous_session(api: Api) -> None:
+    account, _ = api.register()
+    first: str = api.login(account).json()["refresh_token"]
+    second: str = api.login(account).json()["refresh_token"]
+    assert refresh(api, first, account.machine).status_code == 401
+    renewed: Response = refresh(api, second, account.machine)
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["licenca"]["plano"] == "TESTE"
+
+
+def test_refresh_requires_login_machine(api: Api) -> None:
+    account, _ = api.register()
+    token: str = api.login(account).json()["refresh_token"]
+    for machine in (None, random_machine()):
+        response: Response = refresh(api, token, machine)
+        assert response.status_code == 403 and error_code(response) == "MAQUINA_DIFERENTE"
+    # A recusa não consome o token.
+    assert refresh(api, token, account.machine).status_code == 200
+
+
+def test_refresh_revalidates_expiration(api: Api) -> None:
+    account, _ = api.register()
+    token: str = api.login(account).json()["refresh_token"]
+    api.set_expiration(account, datetime.now(UTC) - timedelta(seconds=1))
+    response: Response = refresh(api, token, account.machine)
+    assert response.status_code == 403 and error_code(response) == "LICENCA_EXPIRADA"
+    assert "access_token" not in response.text
+    assert api.license_of(account).status == LicenseState.EXPIRADA
+
+
+@pytest.mark.parametrize("action", ["bloquear", "resetar-maquina"])
+def test_block_and_reset_revoke_sessions(api: Api, admin: Account, action: str) -> None:
+    account, _ = api.register()
+    token: str = api.login(account).json()["refresh_token"]
+    license_id: UUID = api.license_of(account).id
+    assert api.request("POST", f"/admin/licencas/{license_id}/{action}", token=admin.token).status_code == 200
+    response: Response = refresh(api, token, account.machine)
+    assert response.status_code == 401 and error_code(response) == "INVALID_REFRESH_TOKEN"

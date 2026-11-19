@@ -8,7 +8,7 @@ from app.modules.auth.logout import logout_session
 from app.modules.auth.refresh import refresh_session
 from app.modules.auth.registration import register_user
 from app.modules.auth.schemas.input import LoginRequest, LogoutRequest, RefreshRequest
-from app.modules.auth.schemas.output import LoginResponse, LogoutResponse, TokenResponse
+from app.modules.auth.schemas.output import LoginResponse, LogoutResponse
 from app.modules.auth.schemas.registration import (
     RegistrationErrorResponse,
     RegistrationResponse,
@@ -42,11 +42,11 @@ def login(data: LoginRequest, session: SessionDependency, response: Response) ->
 
 
 @router.post(
-    "/refresh", response_model=TokenResponse,
-    responses={code: {"model": RegistrationErrorResponse} for code in (401, 422, 500, 503)},
+    "/refresh", response_model=LoginResponse,
+    responses={code: {"model": RegistrationErrorResponse} for code in (401, 403, 404, 409, 422, 500, 503)},
 )
-def refresh(data: RefreshRequest, session: SessionDependency, response: Response) -> TokenResponse:
-    result: TokenResponse = refresh_session(data, session)
+def refresh(data: RefreshRequest, session: SessionDependency, response: Response) -> LoginResponse:
+    result: LoginResponse = refresh_session(data, session)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     return result
