@@ -88,7 +88,8 @@ existente também trazem `licenca` e `servidor_agora`:
    `POST /licencas/ativar-chave` com `email` e `senha` no corpo. Depois, faça
    login de novo.
 5. **Renovação antecipada:** com sessão válida, `POST /licencas/ativar-chave`
-   com Bearer.
+   com Bearer. Sobre um plano pago válido, os dias restantes são mantidos. Sobre
+   o `TESTE`, o plano conta a partir da ativação e os dias de teste são descartados.
 
 ## Rotas do aplicativo
 
@@ -264,7 +265,11 @@ A chave aceita minúsculas, espaços e hífens. Ela é de uso único: depois de
 ativada, nunca mais vale.
 
 Como o plano é aplicado:
-- **Licença ainda válida:** a duração do plano é somada à `data_expiracao` atual.
+- **Licença paga (`MENSAL`, `SEMESTRAL`, `ANUAL`) ainda válida:** a duração do
+  plano é somada à `data_expiracao` atual.
+- **Licença `TESTE`, válida ou vencida:** a duração conta a partir de agora. Os
+  dias que sobravam do teste são descartados. Exemplo: com 5 dias de teste
+  restantes, uma chave `MENSAL` dá 1 mês a partir da ativação, e não 1 mês e 5 dias.
 - **Licença vencida:** a duração conta a partir de agora.
 - **Chave `VITALICIO`:** remove a expiração.
 - **Licença que já é vitalícia e ativa:** recusa qualquer chave, inclusive outra

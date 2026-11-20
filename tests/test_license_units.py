@@ -103,9 +103,28 @@ def test_renewal_adds_to_valid_expiration() -> None:
     assert renewed_expiration(license, LicensePlanCode.ANUAL, NOW) == add_calendar_months(current, 12)
 
 
+@pytest.mark.parametrize("current", [LicensePlanCode.MENSAL, LicensePlanCode.SEMESTRAL, LicensePlanCode.ANUAL])
+def test_renewal_of_valid_paid_plan_keeps_remaining_days(current: LicensePlanCode) -> None:
+    expires_at: datetime = NOW + timedelta(days=20)
+    license: License = make_license(current, LicenseState.ATIVA, expires_at)
+    assert renewed_expiration(license, LicensePlanCode.MENSAL, NOW) == add_calendar_months(expires_at, 1)
+
+
+@pytest.mark.parametrize("plan", [LicensePlanCode.MENSAL, LicensePlanCode.SEMESTRAL, LicensePlanCode.ANUAL])
+def test_paid_plan_over_valid_trial_starts_now_discarding_trial_days(plan: LicensePlanCode) -> None:
+    trial: License = make_license(LicensePlanCode.TESTE, LicenseState.ATIVA, NOW + timedelta(days=5))
+    assert renewed_expiration(trial, plan, NOW) == plan_end(plan, NOW)
+
+
+def test_lifetime_over_trial_has_no_expiration() -> None:
+    trial: License = make_license(LicensePlanCode.TESTE, LicenseState.ATIVA, NOW + timedelta(days=5))
+    assert renewed_expiration(trial, LicensePlanCode.VITALICIO, NOW) is None
+
+
+@pytest.mark.parametrize("plan", [LicensePlanCode.TESTE, LicensePlanCode.MENSAL])
 @pytest.mark.parametrize("status", [LicenseState.ATIVA, LicenseState.EXPIRADA])
-def test_renewal_of_expired_starts_now(status: LicenseState) -> None:
-    license: License = make_license(LicensePlanCode.MENSAL, status, NOW - timedelta(days=3))
+def test_renewal_of_expired_starts_now(plan: LicensePlanCode, status: LicenseState) -> None:
+    license: License = make_license(plan, status, NOW - timedelta(days=3))
     assert renewed_expiration(license, LicensePlanCode.MENSAL, NOW) == add_calendar_months(NOW, 1)
 
 

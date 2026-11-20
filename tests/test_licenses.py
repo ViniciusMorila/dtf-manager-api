@@ -440,23 +440,48 @@ def test_expiration_is_persisted_and_refused_on_login_and_status(api: Api) -> No
 
 # --- Chaves -------------------------------------------------------------------------------
 
-def test_valid_key_renews_valid_license_from_current_expiration(api: Api, admin: Account) -> None:
+def test_key_over_valid_trial_counts_from_now_discarding_trial_days(api: Api, admin: Account) -> None:
     account, _ = api.register()
     api.login(account)
-    previous: datetime = api.license_of(account).expires_at
+    trial_end: datetime = api.license_of(account).expires_at
     key: str = new_key(api, admin, "MENSAL")
+    before: datetime = datetime.now(UTC)
     response: Response = api.activate(account, key.lower())
     assert response.status_code == 200, response.text
     assert response.json()["plano_ativado"] == "MENSAL"
     license: License = api.license_of(account)
     assert license.plan == LicensePlanCode.MENSAL and license.status == LicenseState.ATIVA
-    assert license.expires_at == add_calendar_months(previous, 1)
+    assert add_calendar_months(before, 1) <= license.expires_at <= add_calendar_months(datetime.now(UTC), 1)
+    assert license.expires_at < add_calendar_months(trial_end, 1)
     stored: ActivationKey = api.session.scalars(select(ActivationKey).where(ActivationKey.license_id == license.id)).one()
     assert stored.status == ActivationKeyStatus.USADA and stored.used_at is not None
     assert key not in (stored.key_hash, stored.key_suffix)
     # O digest é HMAC com o pepper: sem o segredo, a chave não pode ser testada contra o banco.
     assert stored.key_hash != sha256(key.encode()).hexdigest()
     assert stored.key_hash == hmac.new(os.environ["ACTIVATION_KEY_SECRET"].encode(), key.encode(), sha256).hexdigest()
+
+
+def test_key_over_valid_trial_using_password_counts_from_now(api: Api, admin: Account) -> None:
+    account, _ = api.register()
+    api.login(account)
+    key: str = new_key(api, admin, "ANUAL")
+    before: datetime = datetime.now(UTC)
+    response: Response = api.activate(account, key, with_password=True)
+    assert response.status_code == 200, response.text
+    license: License = api.license_of(account)
+    assert add_calendar_months(before, 12) <= license.expires_at <= add_calendar_months(datetime.now(UTC), 12)
+
+
+def test_valid_key_renews_valid_paid_license_from_current_expiration(api: Api, admin: Account) -> None:
+    account, _ = api.register()
+    api.login(account)
+    assert api.activate(account, new_key(api, admin, "MENSAL")).status_code == 200
+    previous: datetime = api.license_of(account).expires_at
+    response: Response = api.activate(account, new_key(api, admin, "SEMESTRAL"), with_password=True)
+    assert response.status_code == 200, response.text
+    license: License = api.license_of(account)
+    assert license.plan == LicensePlanCode.SEMESTRAL and license.status == LicenseState.ATIVA
+    assert license.expires_at == add_calendar_months(previous, 6)
 
 
 def test_key_on_expired_license_counts_from_now_using_password(api: Api, admin: Account) -> None:

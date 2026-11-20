@@ -31,13 +31,17 @@ def is_currently_valid(license: License, now: datetime) -> bool:
 
 
 def renewed_expiration(license: License, plan: LicensePlanCode, now: datetime) -> datetime | None:
-    """Válida: soma à expiração atual. Vencida: soma a partir de agora. Vitalício: sem expiração."""
+    """Paga válida: soma à expiração atual. Teste ou vencida: conta a partir de agora.
+
+    Os dias que sobravam do teste são descartados. Vitalício: sem expiração.
+    """
     if plan == LicensePlanCode.VITALICIO:
         return None
     if license.plan == LicensePlanCode.VITALICIO and is_currently_valid(license, now):
         raise LicenseAlreadyLifetime()
     base: datetime = license.expires_at if (
-        is_currently_valid(license, now) and license.expires_at is not None) else now
+        license.plan != LicensePlanCode.TESTE and is_currently_valid(license, now)
+        and license.expires_at is not None) else now
     return plan_end(plan, base)
 
 
