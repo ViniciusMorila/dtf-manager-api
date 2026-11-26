@@ -31,6 +31,8 @@ class User(UUIDPrimaryKey, Timestamps, Base):
     cpf: Mapped[str | None] = mapped_column(String(11), unique=True)
     email: Mapped[str] = mapped_column(String(320), unique=True)
     password_hash: Mapped[str] = mapped_column(String(512))
+    # Origem do cliente (indicação), opcional e informada no cadastro.
+    referral: Mapped[str | None] = mapped_column("indicacao", String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, name="user_role", validate_strings=True),

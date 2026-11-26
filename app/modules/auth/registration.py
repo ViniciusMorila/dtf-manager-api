@@ -52,7 +52,7 @@ def register_user(data: UserCreate, session: Session) -> RegistrationResponse:
             user: User = User(
                 name=data.name, cpf=data.cpf, email=str(data.email),
                 password_hash=hash_password(data.password.get_secret_value()), is_active=True,
-                role=UserRole.USER,
+                role=UserRole.USER, referral=data.indicacao,
             )
             session.add(user)
             session.flush()

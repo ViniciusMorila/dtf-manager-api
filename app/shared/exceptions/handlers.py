@@ -15,12 +15,14 @@ from app.shared.exceptions.license import (
 from app.shared.exceptions.registration import (
     InvalidCPF,
     InvalidPlan,
+    InvalidReferral,
     RegistrationError,
     WeakPassword,
 )
 
 _REGISTRATION_FIELDS: dict[str, type[RegistrationError]] = {
     "cpf": InvalidCPF, "plan_code": InvalidPlan, "password": WeakPassword, "senha": WeakPassword,
+    "indicacao": InvalidReferral,
 }
 # Campos de licença têm código próprio em qualquer rota.
 _LICENSE_FIELDS: dict[str, type[ApiError]] = {

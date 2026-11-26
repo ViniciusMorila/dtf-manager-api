@@ -1,4 +1,4 @@
-"""Contrato HTTP das licenças do aplicativo; campos em português, estáveis para o DTF."""
+"""Contrato HTTP das licenças do aplicativo; campos em português, estáveis para o Layera."""
 
 from datetime import datetime
 from typing import Annotated
@@ -106,6 +106,8 @@ class UsuarioResumo(BaseModel):
     id: UUID
     nome: str
     email: str
+    indicacao: str | None = None
+    cadastrado_em: UTCDateTime | None = None
 
 
 class LicencaAdmin(BaseModel):

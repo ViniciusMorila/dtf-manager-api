@@ -42,6 +42,12 @@ class WeakPassword(RegistrationError):
     status_code = 422
 
 
+class InvalidReferral(RegistrationError):
+    code = "INDICACAO_INVALIDA"
+    message = "A indicação deve ter no máximo 100 caracteres."
+    status_code = 422
+
+
 class RegistrationUnavailable(RegistrationError):
     code = "REGISTRATION_UNAVAILABLE"
     message = "Cadastro temporariamente indisponível."

@@ -227,3 +227,52 @@ def test_real_postgresql_subscription_failure_rolls_back_user(real_session: Sess
     finally:
         event.remove(Subscription, "before_insert", fail_insert)
     assert real_session.scalar(select(User.id).where(User.email == data.email)) is None
+
+
+def registered_user(database_session: MagicMock) -> User:
+    return database_session.add.call_args_list[0].args[0]
+
+
+def test_register_with_referral_trims_and_saves(payload: dict[str, str], database_session: MagicMock) -> None:
+    payload["indicacao"] = "  Instagram @loja  "
+    response: Response = post_registration(payload, database_session)
+    assert response.status_code == 201, response.text
+    assert registered_user(database_session).referral == "Instagram @loja"
+    assert "indicacao" not in response.text
+
+
+def test_register_without_referral_is_unchanged(payload: dict[str, str], database_session: MagicMock) -> None:
+    response: Response = post_registration(payload, database_session)
+    assert response.status_code == 201, response.text
+    assert registered_user(database_session).referral is None
+
+
+@pytest.mark.parametrize("empty", ["", "   ", None])
+def test_register_with_empty_referral_is_null(
+    payload: dict[str, str], database_session: MagicMock, empty: str | None,
+) -> None:
+    payload["indicacao"] = empty  # type: ignore[assignment]
+    response: Response = post_registration(payload, database_session)
+    assert response.status_code == 201, response.text
+    assert registered_user(database_session).referral is None
+
+
+def test_register_with_referral_of_exactly_100_characters(
+    payload: dict[str, str], database_session: MagicMock,
+) -> None:
+    payload["indicacao"] = "x" * 100
+    assert post_registration(payload, database_session).status_code == 201
+    assert registered_user(database_session).referral == "x" * 100
+
+
+def test_register_with_referral_over_100_characters_is_refused(
+    payload: dict[str, str], database_session: MagicMock,
+) -> None:
+    payload["indicacao"] = "y" * 101
+    response: Response = post_registration(payload, database_session)
+    assert response.status_code == 422
+    assert response.json()["error"] == {
+        "code": "INDICACAO_INVALIDA", "message": "A indicação deve ter no máximo 100 caracteres."}
+    assert "y" * 10 not in response.text
+    database_session.begin.assert_not_called()
+    database_session.add.assert_not_called()

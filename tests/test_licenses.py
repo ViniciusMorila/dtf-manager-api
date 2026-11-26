@@ -50,7 +50,7 @@ from app.shared.utils.calendar import add_calendar_months
 from scripts.backfill_licenses import backfill_licenses
 from scripts.seed_admin import PromotionRefused, seed_admin
 
-HEAD: str = "0003_licenses"
+HEAD: str = "0004_user_referral"
 
 
 @pytest.fixture
@@ -378,6 +378,25 @@ def test_registration_without_key_is_unchanged(api: Api, db: Session) -> None:
     trial: TrialUsage = db.scalars(select(TrialUsage).where(TrialUsage.machine_id == account.machine.lower())).one()
     assert trial.phone == api.license_of(account).phone
     assert api.register(machine=account.machine)[1].status_code == 409
+
+
+def test_registration_referral_is_saved_and_listed_for_admin(api: Api, admin: Account, db: Session) -> None:
+    account: Account = Account(email=f"{uuid4().hex}@example.com", password=secrets.token_urlsafe(16) + "a1",
+                               phone=random_phone(), machine=random_machine())
+    response: Response = api.request("POST", "/auth/register", json={
+        "nome": "Cliente Indicado", "telefone": account.phone, "email": account.email, "senha": account.password,
+        "id_maquina": account.machine, "indicacao": "  Parceiro Zeta  "})
+    assert response.status_code == 201, response.text
+    assert db.scalars(select(User).where(User.email == account.email)).one().referral == "Parceiro Zeta"
+    listed = api.request("GET", "/admin/licencas?busca=parceiro zeta", token=admin.token).json()["itens"]
+    assert [item["usuario"]["email"] for item in listed] == [account.email]
+    assert listed[0]["usuario"]["indicacao"] == "Parceiro Zeta" and listed[0]["usuario"]["cadastrado_em"]
+
+
+def test_registration_without_referral_stores_null(api: Api, db: Session) -> None:
+    account, response = api.register()
+    assert response.status_code == 201
+    assert db.scalars(select(User).where(User.email == account.email)).one().referral is None
 
 
 def test_invalid_phone_code(api: Api) -> None:

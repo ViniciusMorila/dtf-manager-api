@@ -12,7 +12,7 @@ _PAGE: str = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Painel de licenças</title>
+<title>Layera · Painel de licenças</title>
 <style nonce="__NONCE__">
 :root { --bg:#f6f7f9; --panel:#fff; --text:#1d232b; --muted:#5d6875; --line:#d9dee4; --accent:#1f5fbf;
         --danger:#b3261e; --ok:#1e7d43; --warn:#9a6700; }
@@ -47,7 +47,7 @@ td.actions { display:flex; gap:6px; }
 </style>
 </head>
 <body>
-<header><h1>DTF Manager · Licenças</h1><button id="logout" class="secondary" hidden>Sair</button></header>
+<header><h1>Layera · Licenças</h1><button id="logout" class="secondary" hidden>Sair</button></header>
 <main>
   <div id="message" role="status"></div>
 
@@ -82,12 +82,12 @@ td.actions { display:flex; gap:6px; }
       <form id="license-filter" class="row">
         <label>Status <select name="status"><option value="">Todos</option><option>ATIVA</option><option>EXPIRADA</option><option>BLOQUEADA</option></select></label>
         <label>Plano <select name="plano"><option value="">Todos</option><option>TESTE</option><option>MENSAL</option><option>SEMESTRAL</option><option>ANUAL</option><option>VITALICIO</option></select></label>
-        <label>Nome, e-mail ou telefone <input name="busca" maxlength="200"></label>
+        <label>Nome, e-mail, telefone ou indicação <input name="busca" maxlength="200"></label>
         <button type="submit">Filtrar</button>
       </form>
       <p id="license-total" class="muted"></p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Cliente</th><th>Plano</th><th>Status</th><th>Expira</th><th>Dias</th><th>Máquina</th><th>Telefone</th><th>Resets</th><th>Ações</th></tr></thead>
+        <thead><tr><th>Cliente</th><th>Indicação</th><th>Cadastro</th><th>Plano</th><th>Status</th><th>Expira</th><th>Dias</th><th>Máquina</th><th>Telefone</th><th>Resets</th><th>Ações</th></tr></thead>
         <tbody id="license-rows"></tbody>
       </table></div>
     </section>
@@ -151,6 +151,7 @@ async function loadLicenses() {
   for (const item of data.itens) {
     const row = document.createElement("tr");
     const who = cell(row, item.usuario.nome); const email = document.createElement("div"); email.className = "muted"; email.textContent = item.usuario.email; who.appendChild(email);
+    cell(row, item.usuario.indicacao || "—"); cell(row, fmt(item.usuario.cadastrado_em));
     cell(row, item.plano); cell(row, item.status, "badge " + item.status);
     cell(row, item.data_expiracao ? fmt(item.data_expiracao) : "Vitalícia");
     cell(row, item.dias_restantes === null ? "—" : String(item.dias_restantes));

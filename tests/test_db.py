@@ -157,7 +157,7 @@ def test_model_discovery_and_modern_mapping(monkeypatch: pytest.MonkeyPatch, tmp
 @pytest.mark.parametrize("driver", ["postgresql", "postgresql+psycopg"])
 def test_alembic_offline_initial_revision(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, driver: str) -> None:
     config: Config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == ["0003_licenses"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["0004_user_referral"]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ENVIRONMENT", "testing")
     monkeypatch.setenv("DATABASE_URL", f"{driver}://localhost/dtf_test")

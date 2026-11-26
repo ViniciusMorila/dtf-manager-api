@@ -104,7 +104,7 @@ def test_migrated_postgresql_schema() -> None:
         context: MigrationContext = MigrationContext.configure(
             connection, opts={"compare_type": True, "compare_server_default": True},
         )
-        assert context.get_current_revision() == "0003_licenses"
+        assert context.get_current_revision() == "0004_user_referral"
         assert compare_metadata(context, Base.metadata) == []
         inspector = inspect(connection)
         for table in Base.metadata.tables.values():

@@ -58,7 +58,8 @@ MAX_PAGE: int = 200
 
 def to_admin(license: License, user: User, now: datetime) -> LicencaAdmin:
     return LicencaAdmin(
-        id=license.id, usuario=UsuarioResumo(id=user.id, nome=user.name, email=user.email),
+        id=license.id, usuario=UsuarioResumo(id=user.id, nome=user.name, email=user.email,
+                                             indicacao=user.referral, cadastrado_em=user.created_at),
         plano=license.plan, status=license.status, data_ativacao=license.activated_at,
         data_expiracao=license.expires_at, dias_restantes=days_remaining(license, now),
         id_maquina=license.machine_id, telefone=license.phone, contador_resets=license.reset_count,
@@ -168,7 +169,8 @@ def list_licenses(session: Session, *, status: LicenseState | None, plan: Licens
             statement = statement.where(License.plan == plan)
         if search:
             term: str = search.strip()
-            conditions = [User.name.ilike(_like(term), escape="\\"), User.email.ilike(_like(term), escape="\\")]
+            conditions = [User.name.ilike(_like(term), escape="\\"), User.email.ilike(_like(term), escape="\\"),
+                          User.referral.ilike(_like(term), escape="\\")]
             digits: str = "".join(character for character in term if character.isdigit())
             if digits:
                 conditions.append(License.phone.like(_like(digits), escape="\\"))

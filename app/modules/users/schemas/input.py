@@ -15,12 +15,14 @@ from pydantic_core import PydanticCustomError
 
 from app.modules.plans.models import PlanCode
 from app.shared.exceptions.license import InvalidPhone, MachineIdInvalid
-from app.shared.exceptions.registration import InvalidCPF, WeakPassword
+from app.shared.exceptions.registration import InvalidCPF, InvalidReferral, WeakPassword
 from app.shared.schemas import InputSchema
 from app.shared.security.password import validate_password_strength
 from app.shared.utils.cpf import normalize_cpf, validate_cpf
 from app.shared.utils.machine import normalize_machine_id
 from app.shared.utils.phone import normalize_phone
+
+REFERRAL_MAX_LENGTH: int = 100
 
 
 class UserCreate(InputSchema):
@@ -46,6 +48,21 @@ class UserCreate(InputSchema):
     activation_key: str | None = Field(
         default=None, max_length=64, exclude=True, repr=False,
         validation_alias=AliasChoices("chave_ativacao", "activation_key"))
+
+    # Origem do cliente: espaços das pontas removidos, vazio vira None, no máximo 100 caracteres.
+    indicacao: str | None = None
+
+    @field_validator("indicacao")
+    @classmethod
+    def normalized_referral(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if len(value) > REFERRAL_MAX_LENGTH:
+            raise PydanticCustomError(InvalidReferral.code, InvalidReferral.message)
+        return value
 
     @field_validator("email")
     @classmethod

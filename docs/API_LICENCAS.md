@@ -1,4 +1,4 @@
-# API de Licenças — contrato para o DTF Manager
+# API de Licenças — contrato para o Layera
 
 Contrato HTTP usado pelo aplicativo desktop para cadastro, login, validação da
 licença e ativação de chaves, e pelo administrador para gerenciar licenças.
@@ -115,6 +115,11 @@ existente também trazem `licenca` e `servidor_agora`:
   mesmo que a conta antiga tenha sido apagada.
 - `chave_ativacao` (opcional; também aceita `activation_key`) cadastra **com
   chave**: veja a seção abaixo. Sem o campo, nada muda.
+- `indicacao` (opcional): origem do cliente. Espaços das pontas são removidos,
+  vazio vira `NULL` e o máximo é 100 caracteres; acima disso o cadastro responde
+  422 `INDICACAO_INVALIDA`. Sem o campo, nada muda. Aparece no painel de admin
+  (`usuario.indicacao` e `usuario.cadastrado_em` em `GET /admin/licencas`) e a
+  `busca` também procura por ela.
 
 #### Cadastro com `chave_ativacao`
 
