@@ -54,7 +54,7 @@ def cobrar(session: Session, user_id: UUID, subscription_id: UUID,
            preco_servidor: Decimal) -> PaymentRecord:
     return PaymentService(session).create_provider_charge(
         user_id=user_id, subscription_id=subscription_id,
-        expected_amount=preco_servidor, description="DTF Manager",
+        expected_amount=preco_servidor, description="Layera",
         provider=MercadoPagoPaymentProvider(Settings()),
     )
 ```

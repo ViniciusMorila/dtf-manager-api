@@ -17,7 +17,7 @@ class Settings(BaseSettings):
         hide_input_in_errors=True,
     )
 
-    app_name: str = Field(default="API DTF Manager", validation_alias="DTF_APP_NAME")
+    app_name: str = Field(default="API Layera", validation_alias="DTF_APP_NAME")
     database_url: SecretStr | None = None
     mercado_pago_webhook_diagnostics: bool = False
     mercado_pago_webhook_capture: bool = False

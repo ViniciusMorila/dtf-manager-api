@@ -1,10 +1,10 @@
-# API DTF Manager
+# API Layera
 
 Etapa 19: licenças do aplicativo desktop. O cadastro cria um teste de 7 dias
 preso à máquina e ao telefone, o login valida licença, expiração e máquina, e
 chaves de ativação de uso único aplicam os planos `MENSAL`, `SEMESTRAL`, `ANUAL`
 e `VITALICIO`. O administrador tem rotas e um painel em `/admin`. O contrato
-completo para a integração do DTF está em [docs/API_LICENCAS.md](docs/API_LICENCAS.md);
+completo para a integração do Layera está em [docs/API_LICENCAS.md](docs/API_LICENCAS.md);
 veja também a seção [Licenças do aplicativo — etapa 19](#licenças-do-aplicativo--etapa-19).
 
 Para diagnosticar assinaturas de Webhooks, distinguir IPN e recuperar um pagamento
@@ -21,19 +21,19 @@ intenção local retorna 409 e falha temporária do provedor retorna 503 para re
 Conciliação e ativação continuam no PaymentService. O roteiro de configuração e
 as limitações da validação local estão documentados no guia acima.
 
-API oficial do DTF Manager. O projeto fornece configurações centralizadas, infraestrutura PostgreSQL/Alembic, models, seed de planos, schemas públicos, utilitários de segurança e serviços de licença e pagamentos. Além das rotas de planos/pagamentos acima, estão disponíveis `GET /health`, `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /license/status` e `GET /me`. O aplicativo DTF Manager não foi alterado.
+API oficial do Layera. O projeto fornece configurações centralizadas, infraestrutura PostgreSQL/Alembic, models, seed de planos, schemas públicos, utilitários de segurança e serviços de licença e pagamentos. Além das rotas de planos/pagamentos acima, estão disponíveis `GET /health`, `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /license/status` e `GET /me`. O aplicativo Layera não foi alterado.
 
 ## Arquitetura obrigatória
 
 ```text
-DTF MANAGER (aplicativo)
+LAYERA (aplicativo)
           ↓ HTTPS
-    API DTF MANAGER
+    API LAYERA
           ↓
       POSTGRESQL
 ```
 
-O aplicativo DTF Manager NUNCA poderá acessar diretamente o PostgreSQL. Toda autenticação, cadastro, licença, plano, pagamento e validação de acesso deverá passar pela API. O acesso ao banco é responsabilidade exclusiva do backend.
+O aplicativo Layera NUNCA poderá acessar diretamente o PostgreSQL. Toda autenticação, cadastro, licença, plano, pagamento e validação de acesso deverá passar pela API. O acesso ao banco é responsabilidade exclusiva do backend.
 
 ## Stack obrigatória
 
@@ -522,7 +522,7 @@ Os testes isolados cobrem resposta sem tokens, filtro por hash, repetição, ent
 
 `app/modules/subscriptions/service.py` fornece `SubscriptionService(session).get_license_status(user_id: UUID)`. Use uma sessão sem transação já iniciada: o serviço abre uma transação, consulta os dados atuais, confirma alterações de expiração e retorna `LicenseStatus`. O schema de saída está em `app/modules/subscriptions/schemas/license.py` e contém somente `active`, `status`, `plan` (code/name), `starts_at`, `expires_at` e `is_lifetime`.
 
-Toda autorização futura de funcionalidades protegidas do DTF Manager deve consultar este serviço e exigir `active = true`. Não reutilizar claims JWT ou uma decisão antiga como prova de licença. O schema inicial `LicenseRead` permanece disponível, mas a decisão centralizada é retornada em `LicenseStatus`.
+Toda autorização futura de funcionalidades protegidas do Layera deve consultar este serviço e exigir `active = true`. Não reutilizar claims JWT ou uma decisão antiga como prova de licença. O schema inicial `LicenseRead` permanece disponível, mas a decisão centralizada é retornada em `LicenseStatus`.
 
 | Condição | Resultado |
 | --- | --- |
@@ -584,7 +584,7 @@ Assinatura, expiração, tipo access e UUID são verificados antes de consultar 
 
 Os dois endpoints não declaram body nem parâmetros `user_id`. Valores extras enviados no body/query não participam da decisão: a conta e sua licença são sempre consultadas pelo UUID autenticado. O DTO de identidade contém somente id, name e email; nenhum model completo é retornado.
 
-**GET /license/status** chama `SubscriptionService.get_license_status` e retorna seu `LicenseStatus`, com `active`, `status`, `plan` (code/name), `starts_at`, `expires_at` e `is_lifetime`. A expiração é consultada e persistida pelo serviço. Contas autenticadas com assinatura PENDING, EXPIRED, SUSPENDED ou CANCELLED podem consultar o endpoint e recebem HTTP 200 com `active=false`; essa consulta não concede autorização de uso do DTF Manager.
+**GET /license/status** chama `SubscriptionService.get_license_status` e retorna seu `LicenseStatus`, com `active`, `status`, `plan` (code/name), `starts_at`, `expires_at` e `is_lifetime`. A expiração é consultada e persistida pelo serviço. Contas autenticadas com assinatura PENDING, EXPIRED, SUSPENDED ou CANCELLED podem consultar o endpoint e recebem HTTP 200 com `active=false`; essa consulta não concede autorização de uso do Layera.
 
 **GET /me** retorna somente `id`, `name`, `email` e `subscription`, contendo `status`, `plan` (code/name), `starts_at` e `expires_at`. O resumo usa a mesma decisão do SubscriptionService; sem assinatura, os quatro campos ficam nulos. CPF, hashes, secrets, tokens e dados de pagamento não fazem parte da resposta.
 
@@ -769,7 +769,7 @@ a ser `ADMIN_SENHA` e todas as sessões da conta são revogadas.
 
 Depois, acesse `https://SEU-DOMINIO/admin`.
 
-**Não use a conta de administrador no aplicativo DTF.** Ela nunca é recusada por
+**Não use a conta de administrador no aplicativo Layera.** Ela nunca é recusada por
 licença (nem bloqueada), não fica presa a nenhuma máquina e entra sem `id_maquina`.
 Quem souber essa senha tem, na prática, uma licença vitalícia em quantos PCs quiser,
 além do acesso ao painel. Use-a só no painel `/admin`, com uma senha exclusiva, e
@@ -845,7 +845,7 @@ Nunca gerar uma licença a partir de CPF, email ou nome.
 
 A integração inicial Mercado Pago valida pagamentos pela API oficial; a escolha de plano ou uma declaração do aplicativo não confirma pagamento.
 
-O aplicativo DTF Manager posteriormente utilizará a API para:
+O aplicativo Layera posteriormente utilizará a API para:
 
 - Login.
 - Refresh de sessão.
@@ -876,7 +876,7 @@ Não apagar a intenção nem marcar `ready` apenas para repetir o teste. Uma pre
 pode ter sido criada remotamente mesmo sem sucesso local. O logging não recupera
 a resposta de uma tentativa anterior e não altera essa proteção.
 
-As regras permanentes estão em [AGENTS.md](AGENTS.md). A etapa 18 autoriza integração inicial Mercado Pago e testes, preservando autenticação e licença, sem alterações no aplicativo DTF Manager.
+As regras permanentes estão em [AGENTS.md](AGENTS.md). A etapa 18 autoriza integração inicial Mercado Pago e testes, preservando autenticação e licença, sem alterações no aplicativo Layera.
 
 ### Diagnóstico temporário de Webhooks
 

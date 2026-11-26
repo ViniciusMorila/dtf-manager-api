@@ -105,7 +105,7 @@ class PaymentService:
                         raise PaymentConflict("Checkout expirado; requer conciliação antes de nova cobrança.")
                     return CheckoutResponse(**self._public_payment(payment).model_dump(), init_point=url)
                 expiration_at = datetime.now(UTC) + timedelta(hours=24)
-                description = f"DTF Manager - {plan.name} ({plan.code.value})"
+                description = f"Layera - {plan.name} ({plan.code.value})"
                 payment = Payment(id=payment_id, user_id=user_id, subscription_id=subscription_id,
                     provider=provider.name, amount=plan.price, currency="BRL", status=PaymentStatus.PENDING,
                     payment_metadata={"checkout_state": "creating", "description": description,

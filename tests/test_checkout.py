@@ -406,7 +406,7 @@ def test_real_sdk_preference_decimal_payload(db: MagicMock, provider: MercadoPag
         assert payload["items"][0]["unit_price"] == Decimal("79.90")
         assert '"unit_price": 79.90' in call.kwargs["data"]
         assert payload["items"][0]["currency_id"] == "BRL"
-        assert "DTF Manager" in payload["items"][0]["title"]
+        assert "Layera" in payload["items"][0]["title"]
         assert payload["external_reference"] == str(db.records[Subscription].id)
         assert payload["metadata"]["payment_id"] == str(db.records[Payment].id)
         assert payload["expires"] is True
